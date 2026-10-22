@@ -156,18 +156,17 @@ function buildStreetAvenueGeometry(
   tx: number,
   ty: number,
   isHorizontal: boolean,
-  laneHash: number,
-  streetCenter: number
+  sLane: number,
+  tLane: number,
+  xStreet: number,
+  adjLane: number
 ): { d: string; pts: [number, number][] } {
-  const laneA = 16 + (laneHash % 7) * 9;
-  const laneB = 18 + ((laneHash >> 3) % 7) * 9;
-
   if (!isHorizontal) {
     const dy = ty - sy;
     const dx = tx - sx;
 
     if (dy > 10 && dy <= ROW_PITCH * 1.6 - BOX_SIZE + 24) {
-      if (Math.abs(dx) < 2) {
+      if (Math.abs(dx) < 1 && adjLane === 0) {
         return {
           d: `M ${sx.toFixed(1)},${sy.toFixed(1)} L ${tx.toFixed(1)},${ty.toFixed(1)}`,
           pts: [
@@ -176,9 +175,9 @@ function buildStreetAvenueGeometry(
           ]
         };
       }
-      const bendY = sy + Math.min(dy - 14, dy * 0.42 + (laneA - 36) * 0.5);
-      const r = Math.min(8, Math.abs(dx) / 2, Math.abs(bendY - sy) / 2, Math.abs(ty - bendY) / 2);
-      const dirX = dx > 0 ? 1 : -1;
+      const bendY = sy + 16 + (adjLane % 9) * 7.5;
+      const r = Math.min(6, Math.abs(dx) / 2, Math.abs(bendY - sy) / 2, Math.abs(ty - bendY) / 2);
+      const dirX = dx >= 0 ? 1 : -1;
       return {
         d: [
           `M ${sx.toFixed(1)},${sy.toFixed(1)}`,
@@ -197,24 +196,38 @@ function buildStreetAvenueGeometry(
       };
     }
 
-    const y1 = sy + laneA;
-    const y2 = ty - laneB;
-    const xStreet = streetCenter;
+    const y1 = sy + 14 + (sLane % 8) * 6.5;
+    const y2 = ty - 14 - (tLane % 8) * 6.5;
+    const xs = xStreet;
+
+    const r1 = Math.min(6, Math.abs(xs - sx) / 2, Math.abs(y1 - sy) / 2);
+    const r2 = Math.min(6, Math.abs(xs - sx) / 2, Math.abs(y2 - y1) / 2);
+    const r3 = Math.min(6, Math.abs(tx - xs) / 2, Math.abs(y2 - y1) / 2);
+    const r4 = Math.min(6, Math.abs(tx - xs) / 2, Math.abs(ty - y2) / 2);
+
+    const dirX1 = xs >= sx ? 1 : -1;
+    const dirX2 = tx >= xs ? 1 : -1;
+    const dirY = y2 >= y1 ? 1 : -1;
+    const dirArr = ty >= y2 ? 1 : -1;
 
     return {
       d: [
         `M ${sx.toFixed(1)},${sy.toFixed(1)}`,
-        `L ${sx.toFixed(1)},${y1.toFixed(1)}`,
-        `L ${xStreet.toFixed(1)},${y1.toFixed(1)}`,
-        `L ${xStreet.toFixed(1)},${y2.toFixed(1)}`,
-        `L ${tx.toFixed(1)},${y2.toFixed(1)}`,
+        `L ${sx.toFixed(1)},${(y1 - r1).toFixed(1)}`,
+        `Q ${sx.toFixed(1)},${y1.toFixed(1)} ${(sx + dirX1 * r1).toFixed(1)},${y1.toFixed(1)}`,
+        `L ${(xs - dirX1 * r2).toFixed(1)},${y1.toFixed(1)}`,
+        `Q ${xs.toFixed(1)},${y1.toFixed(1)} ${xs.toFixed(1)},${(y1 + dirY * r2).toFixed(1)}`,
+        `L ${xs.toFixed(1)},${(y2 - dirY * r3).toFixed(1)}`,
+        `Q ${xs.toFixed(1)},${y2.toFixed(1)} ${(xs + dirX2 * r3).toFixed(1)},${y2.toFixed(1)}`,
+        `L ${(tx - dirX2 * r4).toFixed(1)},${y2.toFixed(1)}`,
+        `Q ${tx.toFixed(1)},${y2.toFixed(1)} ${tx.toFixed(1)},${(y2 + dirArr * r4).toFixed(1)}`,
         `L ${tx.toFixed(1)},${ty.toFixed(1)}`
       ].join(' '),
       pts: [
         [sx, sy],
         [sx, y1],
-        [xStreet, y1],
-        [xStreet, y2],
+        [xs, y1],
+        [xs, y2],
         [tx, y2],
         [tx, ty]
       ]
@@ -224,7 +237,7 @@ function buildStreetAvenueGeometry(
     const dy = ty - sy;
 
     if (dx > 10 && dx <= ROW_PITCH * 1.6 - BOX_SIZE + 24) {
-      if (Math.abs(dy) < 2) {
+      if (Math.abs(dy) < 1 && adjLane === 0) {
         return {
           d: `M ${sx.toFixed(1)},${sy.toFixed(1)} L ${tx.toFixed(1)},${ty.toFixed(1)}`,
           pts: [
@@ -233,9 +246,9 @@ function buildStreetAvenueGeometry(
           ]
         };
       }
-      const bendX = sx + Math.min(dx - 14, dx * 0.42 + (laneA - 36) * 0.5);
-      const r = Math.min(8, Math.abs(dy) / 2, Math.abs(bendX - sx) / 2, Math.abs(tx - bendX) / 2);
-      const dirY = dy > 0 ? 1 : -1;
+      const bendX = sx + 16 + (adjLane % 9) * 7.5;
+      const r = Math.min(6, Math.abs(dy) / 2, Math.abs(bendX - sx) / 2, Math.abs(tx - bendX) / 2);
+      const dirY = dy >= 0 ? 1 : -1;
       return {
         d: [
           `M ${sx.toFixed(1)},${sy.toFixed(1)}`,
@@ -254,24 +267,38 @@ function buildStreetAvenueGeometry(
       };
     }
 
-    const x1 = sx + laneA;
-    const x2 = tx - laneB;
-    const yStreet = streetCenter;
+    const x1 = sx + 14 + (sLane % 8) * 6.5;
+    const x2 = tx - 14 - (tLane % 8) * 6.5;
+    const ys = xStreet;
+
+    const r1 = Math.min(6, Math.abs(x1 - sx) / 2, Math.abs(ys - sy) / 2);
+    const r2 = Math.min(6, Math.abs(x2 - x1) / 2, Math.abs(ys - sy) / 2);
+    const r3 = Math.min(6, Math.abs(x2 - x1) / 2, Math.abs(ty - ys) / 2);
+    const r4 = Math.min(6, Math.abs(tx - x2) / 2, Math.abs(ty - ys) / 2);
+
+    const dirY1 = ys >= sy ? 1 : -1;
+    const dirY2 = ty >= ys ? 1 : -1;
+    const dirX = x2 >= x1 ? 1 : -1;
+    const dirArr = tx >= x2 ? 1 : -1;
 
     return {
       d: [
         `M ${sx.toFixed(1)},${sy.toFixed(1)}`,
-        `L ${x1.toFixed(1)},${sy.toFixed(1)}`,
-        `L ${x1.toFixed(1)},${yStreet.toFixed(1)}`,
-        `L ${x2.toFixed(1)},${yStreet.toFixed(1)}`,
-        `L ${x2.toFixed(1)},${ty.toFixed(1)}`,
+        `L ${(x1 - r1).toFixed(1)},${sy.toFixed(1)}`,
+        `Q ${x1.toFixed(1)},${sy.toFixed(1)} ${x1.toFixed(1)},${(sy + dirY1 * r1).toFixed(1)}`,
+        `L ${x1.toFixed(1)},${(ys - dirY1 * r2).toFixed(1)}`,
+        `Q ${x1.toFixed(1)},${ys.toFixed(1)} ${(x1 + dirX * r2).toFixed(1)},${ys.toFixed(1)}`,
+        `L ${(x2 - dirX * r3).toFixed(1)},${ys.toFixed(1)}`,
+        `Q ${x2.toFixed(1)},${ys.toFixed(1)} ${x2.toFixed(1)},${(ys + dirY2 * r3).toFixed(1)}`,
+        `L ${x2.toFixed(1)},${(ty - dirArr * r4).toFixed(1)}`,
+        `Q ${x2.toFixed(1)},${ty.toFixed(1)} ${(x2 + dirArr * r4).toFixed(1)},${ty.toFixed(1)}`,
         `L ${tx.toFixed(1)},${ty.toFixed(1)}`
       ].join(' '),
       pts: [
         [sx, sy],
         [x1, sy],
-        [x1, yStreet],
-        [x2, yStreet],
+        [x1, ys],
+        [x2, ys],
         [x2, ty],
         [tx, ty]
       ]
@@ -742,6 +769,56 @@ function computeLayoutAndBatchedCables(
     inByTarget.get(t)!.push(e);
   });
 
+  // En modo plano: ordenar pines terminales de salida y entrada para que los cables salgan y lleguen paralelos
+  if (!isMap) {
+    for (const list of outBySource.values()) {
+      list.sort((a, b) => {
+        const pa = positions.get(String(a.target));
+        const pb = positions.get(String(b.target));
+        if (!pa || !pb) return 0;
+        return isHorizontal ? pa.y - pb.y : pa.x - pb.x;
+      });
+    }
+    for (const list of inByTarget.values()) {
+      list.sort((a, b) => {
+        const pa = positions.get(String(a.source));
+        const pb = positions.get(String(b.source));
+        if (!pa || !pb) return 0;
+        return isHorizontal ? pa.y - pb.y : pa.x - pb.x;
+      });
+    }
+  }
+
+  // Pre-agrupar líneas por corredor de calle vertical y franja adyacente para asignar pistas paralelas 100% libres de colisión
+  const adjacentRowUsage = new Map<string, GridEdgeData[]>();
+  const streetColUsage = new Map<number, GridEdgeData[]>();
+
+  if (!isMap) {
+    activeEdgesRaw.forEach((e) => {
+      const sPos = positions.get(String(e.source));
+      const tPos = positions.get(String(e.target));
+      if (!sPos || !tPos) return;
+
+      const deltaMain = !isHorizontal
+        ? tPos.y - (sPos.y + BOX_SIZE)
+        : tPos.x - (sPos.x + BOX_SIZE);
+
+      if (deltaMain > 10 && deltaMain <= ROW_PITCH * 1.6 - BOX_SIZE + 24) {
+        const rowKey = !isHorizontal
+          ? `${Math.round(sPos.y / ROW_PITCH)}_${Math.round(tPos.y / ROW_PITCH)}`
+          : `${Math.round(sPos.x / ROW_PITCH)}_${Math.round(tPos.x / ROW_PITCH)}`;
+        if (!adjacentRowUsage.has(rowKey)) adjacentRowUsage.set(rowKey, []);
+        adjacentRowUsage.get(rowKey)!.push(e);
+      } else {
+        const streetCol = !isHorizontal
+          ? Math.round(tPos.x / COL_PITCH)
+          : Math.round(tPos.y / COL_PITCH);
+        if (!streetColUsage.has(streetCol)) streetColUsage.set(streetCol, []);
+        streetColUsage.get(streetCol)!.push(e);
+      }
+    });
+  }
+
   const cableGeometries: ComputedCableGeometry[] = [];
   const baseByKv: Record<number, string[]> = { 500: [], 220: [], 132: [], 33: [], 13.2: [] };
   const animByKvSpeed: Record<string, { kv: number; speed: 'fast' | 'med' | 'slow'; paths: string[] }> = {};
@@ -756,8 +833,8 @@ function computeLayoutAndBatchedCables(
     const sIdx = sList.indexOf(e);
     const tIdx = tList.indexOf(e);
 
-    const sStep = Math.min(12, 76 / Math.max(1, sList.length));
-    const tStep = Math.min(12, 76 / Math.max(1, tList.length));
+    const sStep = Math.min(10, 84 / Math.max(1, sList.length));
+    const tStep = Math.min(10, 84 / Math.max(1, tList.length));
     const sOff = (sIdx - (sList.length - 1) / 2) * sStep;
     const tOff = (tIdx - (tList.length - 1) / 2) * tStep;
 
@@ -783,13 +860,31 @@ function computeLayoutAndBatchedCables(
       ty = tPos.y + HALF_BOX + tOff;
     }
 
+    const streetCol = !isHorizontal
+      ? Math.round(tPos.x / COL_PITCH)
+      : Math.round(tPos.y / COL_PITCH);
+    const stList = streetColUsage.get(streetCol) || [e];
+    const stIdx = stList.indexOf(e);
+    const stCount = stList.length;
     const tgtCenter = !isHorizontal ? tPos.x + HALF_BOX : tPos.y + HALF_BOX;
-    const streetJitter = ((idx % 5) - 2) * 7;
-    const streetCenter = tgtCenter + COL_PITCH / 2 + streetJitter;
+    const streetCenter = tgtCenter + COL_PITCH / 2;
+    const streetTrack = streetCenter + (stIdx - (stCount - 1) / 2) * 6.5;
+
+    const rowKey = !isHorizontal
+      ? `${Math.round(sPos.y / ROW_PITCH)}_${Math.round(tPos.y / ROW_PITCH)}`
+      : `${Math.round(sPos.x / ROW_PITCH)}_${Math.round(tPos.x / ROW_PITCH)}`;
+    const adjList = adjacentRowUsage.get(rowKey) || [e];
+    const adjIdx = adjList.indexOf(e);
 
     const geom = isMap
       ? buildCurvedMapGeometry(sx, sy, tx, ty, e.curvature ?? 0.14)
-      : buildStreetAvenueGeometry(sx, sy, tx, ty, isHorizontal, e.laneHash ?? idx + 1, streetCenter);
+      : buildStreetAvenueGeometry(
+          sx, sy, tx, ty,
+          isHorizontal,
+          sIdx, tIdx,
+          streetTrack,
+          adjIdx
+        );
 
     const factor = getRegionFactor(e.region);
     const liveAmperes = Math.round(e.amperes * factor);
