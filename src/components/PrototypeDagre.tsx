@@ -161,6 +161,8 @@ function buildStreetAvenueGeometry(
   xStreet: number,
   adjLane: number
 ): { d: string; pts: [number, number][] } {
+  const TRACK_PITCH = 10.0; // Espaciado ampliado a 10px para garantizar separación visible en líneas de 500 kV
+
   if (!isHorizontal) {
     const dy = ty - sy;
     const dx = tx - sx;
@@ -175,7 +177,7 @@ function buildStreetAvenueGeometry(
           ]
         };
       }
-      const bendY = sy + 16 + (adjLane % 9) * 7.5;
+      const bendY = sy + 18 + (adjLane % 8) * TRACK_PITCH;
       const r = Math.min(6, Math.abs(dx) / 2, Math.abs(bendY - sy) / 2, Math.abs(ty - bendY) / 2);
       const dirX = dx >= 0 ? 1 : -1;
       return {
@@ -196,8 +198,8 @@ function buildStreetAvenueGeometry(
       };
     }
 
-    const y1 = sy + 14 + (sLane % 8) * 6.5;
-    const y2 = ty - 14 - (tLane % 8) * 6.5;
+    const y1 = sy + 16 + (sLane % 8) * TRACK_PITCH;
+    const y2 = ty - 16 - (tLane % 8) * TRACK_PITCH;
     const xs = xStreet;
 
     const r1 = Math.min(6, Math.abs(xs - sx) / 2, Math.abs(y1 - sy) / 2);
@@ -246,7 +248,7 @@ function buildStreetAvenueGeometry(
           ]
         };
       }
-      const bendX = sx + 16 + (adjLane % 9) * 7.5;
+      const bendX = sx + 18 + (adjLane % 8) * TRACK_PITCH;
       const r = Math.min(6, Math.abs(dy) / 2, Math.abs(bendX - sx) / 2, Math.abs(tx - bendX) / 2);
       const dirY = dy >= 0 ? 1 : -1;
       return {
@@ -267,8 +269,8 @@ function buildStreetAvenueGeometry(
       };
     }
 
-    const x1 = sx + 14 + (sLane % 8) * 6.5;
-    const x2 = tx - 14 - (tLane % 8) * 6.5;
+    const x1 = sx + 16 + (sLane % 8) * TRACK_PITCH;
+    const x2 = tx - 16 - (tLane % 8) * TRACK_PITCH;
     const ys = xStreet;
 
     const r1 = Math.min(6, Math.abs(x1 - sx) / 2, Math.abs(ys - sy) / 2);
@@ -789,8 +791,9 @@ function computeLayoutAndBatchedCables(
     }
   }
 
-  // Pre-agrupar líneas por corredor de calle vertical y franja adyacente para asignar pistas paralelas 100% libres de colisión
-  const adjacentRowUsage = new Map<string, GridEdgeData[]>();
+  // Pre-agrupar líneas por corredor de avenida y calle vertical con asignación determinista libre de colisiones
+  const unifiedAvenueUsage = new Map<number, GridEdgeData[]>();
+  const unifiedArrivalUsage = new Map<number, GridEdgeData[]>();
   const streetColUsage = new Map<number, GridEdgeData[]>();
 
   if (!isMap) {
@@ -799,17 +802,20 @@ function computeLayoutAndBatchedCables(
       const tPos = positions.get(String(e.target));
       if (!sPos || !tPos) return;
 
+      const sRow = !isHorizontal ? Math.round(sPos.y / ROW_PITCH) : Math.round(sPos.x / ROW_PITCH);
+      const tRow = !isHorizontal ? Math.round(tPos.y / ROW_PITCH) : Math.round(tPos.x / ROW_PITCH);
+
+      if (!unifiedAvenueUsage.has(sRow)) unifiedAvenueUsage.set(sRow, []);
+      unifiedAvenueUsage.get(sRow)!.push(e);
+
+      if (!unifiedArrivalUsage.has(tRow)) unifiedArrivalUsage.set(tRow, []);
+      unifiedArrivalUsage.get(tRow)!.push(e);
+
       const deltaMain = !isHorizontal
         ? tPos.y - (sPos.y + BOX_SIZE)
         : tPos.x - (sPos.x + BOX_SIZE);
 
-      if (deltaMain > 10 && deltaMain <= ROW_PITCH * 1.6 - BOX_SIZE + 24) {
-        const rowKey = !isHorizontal
-          ? `${Math.round(sPos.y / ROW_PITCH)}_${Math.round(tPos.y / ROW_PITCH)}`
-          : `${Math.round(sPos.x / ROW_PITCH)}_${Math.round(tPos.x / ROW_PITCH)}`;
-        if (!adjacentRowUsage.has(rowKey)) adjacentRowUsage.set(rowKey, []);
-        adjacentRowUsage.get(rowKey)!.push(e);
-      } else {
+      if (deltaMain <= 10 || deltaMain > ROW_PITCH * 1.6 - BOX_SIZE + 24) {
         const streetCol = !isHorizontal
           ? Math.round(tPos.x / COL_PITCH)
           : Math.round(tPos.y / COL_PITCH);
@@ -833,8 +839,8 @@ function computeLayoutAndBatchedCables(
     const sIdx = sList.indexOf(e);
     const tIdx = tList.indexOf(e);
 
-    const sStep = Math.min(10, 84 / Math.max(1, sList.length));
-    const tStep = Math.min(10, 84 / Math.max(1, tList.length));
+    const sStep = Math.min(14, 96 / Math.max(1, sList.length));
+    const tStep = Math.min(14, 96 / Math.max(1, tList.length));
     const sOff = (sIdx - (sList.length - 1) / 2) * sStep;
     const tOff = (tIdx - (tList.length - 1) / 2) * tStep;
 
@@ -860,30 +866,32 @@ function computeLayoutAndBatchedCables(
       ty = tPos.y + HALF_BOX + tOff;
     }
 
-    const streetCol = !isHorizontal
-      ? Math.round(tPos.x / COL_PITCH)
-      : Math.round(tPos.y / COL_PITCH);
+    const sRow = !isHorizontal ? Math.round(sPos.y / ROW_PITCH) : Math.round(sPos.x / ROW_PITCH);
+    const tRow = !isHorizontal ? Math.round(tPos.y / ROW_PITCH) : Math.round(tPos.x / ROW_PITCH);
+
+    const aveList = unifiedAvenueUsage.get(sRow) || [e];
+    const aveLane = aveList.indexOf(e);
+
+    const arrList = unifiedArrivalUsage.get(tRow) || [e];
+    const arrLane = arrList.indexOf(e);
+
+    const streetCol = !isHorizontal ? Math.round(tPos.x / COL_PITCH) : Math.round(tPos.y / COL_PITCH);
     const stList = streetColUsage.get(streetCol) || [e];
     const stIdx = stList.indexOf(e);
     const stCount = stList.length;
     const tgtCenter = !isHorizontal ? tPos.x + HALF_BOX : tPos.y + HALF_BOX;
     const streetCenter = tgtCenter + COL_PITCH / 2;
-    const streetTrack = streetCenter + (stIdx - (stCount - 1) / 2) * 6.5;
-
-    const rowKey = !isHorizontal
-      ? `${Math.round(sPos.y / ROW_PITCH)}_${Math.round(tPos.y / ROW_PITCH)}`
-      : `${Math.round(sPos.x / ROW_PITCH)}_${Math.round(tPos.x / ROW_PITCH)}`;
-    const adjList = adjacentRowUsage.get(rowKey) || [e];
-    const adjIdx = adjList.indexOf(e);
+    const streetTrack = streetCenter + (stIdx - (stCount - 1) / 2) * 10.0;
 
     const geom = isMap
       ? buildCurvedMapGeometry(sx, sy, tx, ty, e.curvature ?? 0.14)
       : buildStreetAvenueGeometry(
           sx, sy, tx, ty,
           isHorizontal,
-          sIdx, tIdx,
+          aveLane,
+          arrLane,
           streetTrack,
-          adjIdx
+          aveLane
         );
 
     const factor = getRegionFactor(e.region);
