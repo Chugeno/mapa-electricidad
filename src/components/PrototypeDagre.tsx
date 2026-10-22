@@ -69,8 +69,8 @@ const MAP_LOD_ZOOM = 0.38;
 
 const BOX_SIZE = 124;
 const HALF_BOX = 62;
-const COL_PITCH = 192; // 124px caja + 68px calle vertical libre entre columnas
-const ROW_PITCH = 228; // 124px caja + 104px avenida horizontal libre entre filas
+const COL_PITCH = 280; // 124px caja + 156px calle vertical libre entre columnas
+const ROW_PITCH = 340; // 124px caja + 216px avenida horizontal libre entre filas
 
 // ============================================================================
 // 2. ICONOS VECTORIALES PRE-COMPILADOS EN PATH2D (COORDENADAS 24x24 LUCIDE)
@@ -150,25 +150,50 @@ function buildCurvedMapGeometry(
   };
 }
 
+// Asignación de canales por coloreo de grafos de intervalos (Left-Edge Algorithm)
+// Garantiza matemáticamente 0 superposiciones colineales entre cables paralelos
+function assignTracks(
+  intervals: { id: string; min: number; max: number }[],
+  minGap = 16
+): { assignments: Map<string, number>; totalTracks: number } {
+  const sorted = [...intervals].sort((a, b) => a.min - b.min || a.max - b.max);
+  const trackEnds: number[] = [];
+  const assignments = new Map<string, number>();
+
+  for (const item of sorted) {
+    let placed = false;
+    for (let t = 0; t < trackEnds.length; t++) {
+      if (trackEnds[t] + minGap <= item.min) {
+        trackEnds[t] = item.max;
+        assignments.set(item.id, t);
+        placed = true;
+        break;
+      }
+    }
+    if (!placed) {
+      assignments.set(item.id, trackEnds.length);
+      trackEnds.push(item.max);
+    }
+  }
+  return { assignments, totalTracks: trackEnds.length };
+}
+
 function buildStreetAvenueGeometry(
   sx: number,
   sy: number,
   tx: number,
   ty: number,
   isHorizontal: boolean,
-  sLane: number,
-  tLane: number,
-  xStreet: number,
-  adjLane: number
+  isAdjacent: boolean,
+  bendOrDepCoord: number,
+  arrCoord: number,
+  streetCoord: number
 ): { d: string; pts: [number, number][] } {
-  const TRACK_PITCH = 10.0; // Espaciado ampliado a 10px para garantizar separación visible en líneas de 500 kV
-
   if (!isHorizontal) {
-    const dy = ty - sy;
-    const dx = tx - sx;
-
-    if (dy > 10 && dy <= ROW_PITCH * 1.6 - BOX_SIZE + 24) {
-      if (Math.abs(dx) < 1 && adjLane === 0) {
+    if (isAdjacent) {
+      const bendY = bendOrDepCoord;
+      const dx = tx - sx;
+      if (Math.abs(dx) < 1) {
         return {
           d: `M ${sx.toFixed(1)},${sy.toFixed(1)} L ${tx.toFixed(1)},${ty.toFixed(1)}`,
           pts: [
@@ -177,7 +202,6 @@ function buildStreetAvenueGeometry(
           ]
         };
       }
-      const bendY = sy + 18 + (adjLane % 8) * TRACK_PITCH;
       const r = Math.min(6, Math.abs(dx) / 2, Math.abs(bendY - sy) / 2, Math.abs(ty - bendY) / 2);
       const dirX = dx >= 0 ? 1 : -1;
       return {
@@ -198,9 +222,9 @@ function buildStreetAvenueGeometry(
       };
     }
 
-    const y1 = sy + 16 + (sLane % 8) * TRACK_PITCH;
-    const y2 = ty - 16 - (tLane % 8) * TRACK_PITCH;
-    const xs = xStreet;
+    const y1 = bendOrDepCoord;
+    const y2 = arrCoord;
+    const xs = streetCoord;
 
     const r1 = Math.min(6, Math.abs(xs - sx) / 2, Math.abs(y1 - sy) / 2);
     const r2 = Math.min(6, Math.abs(xs - sx) / 2, Math.abs(y2 - y1) / 2);
@@ -235,11 +259,10 @@ function buildStreetAvenueGeometry(
       ]
     };
   } else {
-    const dx = tx - sx;
-    const dy = ty - sy;
-
-    if (dx > 10 && dx <= ROW_PITCH * 1.6 - BOX_SIZE + 24) {
-      if (Math.abs(dy) < 1 && adjLane === 0) {
+    if (isAdjacent) {
+      const bendX = bendOrDepCoord;
+      const dy = ty - sy;
+      if (Math.abs(dy) < 1) {
         return {
           d: `M ${sx.toFixed(1)},${sy.toFixed(1)} L ${tx.toFixed(1)},${ty.toFixed(1)}`,
           pts: [
@@ -248,7 +271,6 @@ function buildStreetAvenueGeometry(
           ]
         };
       }
-      const bendX = sx + 18 + (adjLane % 8) * TRACK_PITCH;
       const r = Math.min(6, Math.abs(dy) / 2, Math.abs(bendX - sx) / 2, Math.abs(tx - bendX) / 2);
       const dirY = dy >= 0 ? 1 : -1;
       return {
@@ -269,9 +291,9 @@ function buildStreetAvenueGeometry(
       };
     }
 
-    const x1 = sx + 16 + (sLane % 8) * TRACK_PITCH;
-    const x2 = tx - 16 - (tLane % 8) * TRACK_PITCH;
-    const ys = xStreet;
+    const x1 = bendOrDepCoord;
+    const x2 = arrCoord;
+    const ys = streetCoord;
 
     const r1 = Math.min(6, Math.abs(x1 - sx) / 2, Math.abs(ys - sy) / 2);
     const r2 = Math.min(6, Math.abs(x2 - x1) / 2, Math.abs(ys - sy) / 2);
@@ -287,7 +309,7 @@ function buildStreetAvenueGeometry(
       d: [
         `M ${sx.toFixed(1)},${sy.toFixed(1)}`,
         `L ${(x1 - r1).toFixed(1)},${sy.toFixed(1)}`,
-        `Q ${x1.toFixed(1)},${sy.toFixed(1)} ${x1.toFixed(1)},${(sy + dirY1 * r1).toFixed(1)}`,
+        `Q ${x1.toFixed(1)},${sy.toFixed(1)} ${(sx + dirY1 * r1).toFixed(1)},${sy.toFixed(1)}`,
         `L ${x1.toFixed(1)},${(ys - dirY1 * r2).toFixed(1)}`,
         `Q ${x1.toFixed(1)},${ys.toFixed(1)} ${(x1 + dirX * r2).toFixed(1)},${ys.toFixed(1)}`,
         `L ${(x2 - dirX * r3).toFixed(1)},${ys.toFixed(1)}`,
@@ -791,10 +813,20 @@ function computeLayoutAndBatchedCables(
     }
   }
 
-  // Pre-agrupar líneas por corredor de avenida y calle vertical con asignación determinista libre de colisiones
-  const unifiedAvenueUsage = new Map<number, GridEdgeData[]>();
-  const unifiedArrivalUsage = new Map<number, GridEdgeData[]>();
-  const streetColUsage = new Map<number, GridEdgeData[]>();
+  // Pre-cálculo de terminales y ruteo determinista libre de colisiones (Left-Edge Channel Routing)
+  interface EdgeRoutingMeta {
+    edge: GridEdgeData;
+    sx: number;
+    sy: number;
+    tx: number;
+    ty: number;
+    sPos: { x: number; y: number; col: number; row: number };
+    tPos: { x: number; y: number; col: number; row: number };
+    isAdjacent: boolean;
+    streetColKey: number;
+  }
+
+  const edgeRoutingMap = new Map<string, EdgeRoutingMeta>();
 
   if (!isMap) {
     activeEdgesRaw.forEach((e) => {
@@ -802,97 +834,202 @@ function computeLayoutAndBatchedCables(
       const tPos = positions.get(String(e.target));
       if (!sPos || !tPos) return;
 
+      const sList = outBySource.get(String(e.source)) || [e];
+      const tList = inByTarget.get(String(e.target)) || [e];
+      const sIdx = sList.indexOf(e);
+      const tIdx = tList.indexOf(e);
+
+      const sStep = Math.min(14, 96 / Math.max(1, sList.length));
+      const tStep = Math.min(14, 96 / Math.max(1, tList.length));
+      const sOff = (sIdx - (sList.length - 1) / 2) * sStep;
+      const tOff = (tIdx - (tList.length - 1) / 2) * tStep;
+
+      let sx = 0,
+        sy = 0,
+        tx = 0,
+        ty = 0;
+
+      if (!isHorizontal) {
+        sx = sPos.x + HALF_BOX + sOff;
+        sy = sPos.y + BOX_SIZE;
+        tx = tPos.x + HALF_BOX + tOff;
+        ty = tPos.y;
+      } else {
+        sx = sPos.x + BOX_SIZE;
+        sy = sPos.y + HALF_BOX + sOff;
+        tx = tPos.x;
+        ty = tPos.y + HALF_BOX + tOff;
+      }
+
+      const sMain = !isHorizontal ? sy : sx;
+      const tMain = !isHorizontal ? ty : tx;
+      const deltaMain = tMain - sMain;
+
+      const isAdjacent = deltaMain > 10 && deltaMain <= ROW_PITCH * 1.6 - BOX_SIZE + 24;
+
+      const sCol = !isHorizontal ? Math.round(sPos.x / COL_PITCH) : Math.round(sPos.y / COL_PITCH);
+      const tCol = !isHorizontal ? Math.round(tPos.x / COL_PITCH) : Math.round(tPos.y / COL_PITCH);
       const sRow = !isHorizontal ? Math.round(sPos.y / ROW_PITCH) : Math.round(sPos.x / ROW_PITCH);
       const tRow = !isHorizontal ? Math.round(tPos.y / ROW_PITCH) : Math.round(tPos.x / ROW_PITCH);
 
-      if (!unifiedAvenueUsage.has(sRow)) unifiedAvenueUsage.set(sRow, []);
-      unifiedAvenueUsage.get(sRow)!.push(e);
+      const streetColKey = sCol !== tCol ? (sCol < tCol ? sCol : tCol) : sCol;
 
-      if (!unifiedArrivalUsage.has(tRow)) unifiedArrivalUsage.set(tRow, []);
-      unifiedArrivalUsage.get(tRow)!.push(e);
-
-      const deltaMain = !isHorizontal
-        ? tPos.y - (sPos.y + BOX_SIZE)
-        : tPos.x - (sPos.x + BOX_SIZE);
-
-      if (deltaMain <= 10 || deltaMain > ROW_PITCH * 1.6 - BOX_SIZE + 24) {
-        const streetCol = !isHorizontal
-          ? Math.round(tPos.x / COL_PITCH)
-          : Math.round(tPos.y / COL_PITCH);
-        if (!streetColUsage.has(streetCol)) streetColUsage.set(streetCol, []);
-        streetColUsage.get(streetCol)!.push(e);
-      }
+      edgeRoutingMap.set(e.id, {
+        edge: e,
+        sx,
+        sy,
+        tx,
+        ty,
+        sPos: { ...sPos, col: sCol, row: sRow },
+        tPos: { ...tPos, col: tCol, row: tRow },
+        isAdjacent,
+        streetColKey
+      });
     });
   }
+
+  // 1. Asignación de canales verticales (calles)
+  const streetIntervals = new Map<number, { id: string; min: number; max: number }[]>();
+  edgeRoutingMap.forEach((m) => {
+    if (m.isAdjacent) return;
+    const colKey = m.streetColKey;
+    const vMin = !isHorizontal ? Math.min(m.sPos.y, m.tPos.y) - 60 : Math.min(m.sPos.x, m.tPos.x) - 60;
+    const vMax = !isHorizontal ? Math.max(m.sPos.y, m.tPos.y) + ROW_PITCH : Math.max(m.sPos.x, m.tPos.x) + ROW_PITCH;
+
+    if (!streetIntervals.has(colKey)) streetIntervals.set(colKey, []);
+    streetIntervals.get(colKey)!.push({ id: m.edge.id, min: vMin, max: vMax });
+  });
+
+  const streetAssignments = new Map<string, number>();
+  const streetTotalTracks = new Map<number, number>();
+  streetIntervals.forEach((intervals, colKey) => {
+    const { assignments, totalTracks } = assignTracks(intervals, 12);
+    assignments.forEach((track, id) => streetAssignments.set(id, track));
+    streetTotalTracks.set(colKey, totalTracks);
+  });
+
+  const computedStreetCoords = new Map<string, number>();
+  edgeRoutingMap.forEach((m) => {
+    if (m.isAdjacent) return;
+    const colKey = m.streetColKey;
+    const track = streetAssignments.get(m.edge.id) || 0;
+    const totalT = streetTotalTracks.get(colKey) || 1;
+    const pitch = Math.min(11.0, 130 / Math.max(1, totalT));
+    const baseStreetX = colKey * COL_PITCH + HALF_BOX + 14;
+    computedStreetCoords.set(m.edge.id, baseStreetX + track * pitch);
+  });
+
+  // 2. Asignación de canales horizontales (avenidas)
+  const depAvenues = new Map<number, { id: string; min: number; max: number }[]>();
+  const adjAvenues = new Map<number, { id: string; min: number; max: number }[]>();
+  const arrAvenues = new Map<number, { id: string; min: number; max: number }[]>();
+  const allAveKeys = new Set<number>();
+
+  edgeRoutingMap.forEach((m) => {
+    if (m.isAdjacent) {
+      const aveKey = !isHorizontal ? m.sPos.row : m.sPos.col;
+      allAveKeys.add(aveKey);
+      const minVal = !isHorizontal ? Math.min(m.sx, m.tx) : Math.min(m.sy, m.ty);
+      const maxVal = !isHorizontal ? Math.max(m.sx, m.tx) : Math.max(m.sy, m.ty);
+      if (!adjAvenues.has(aveKey)) adjAvenues.set(aveKey, []);
+      adjAvenues.get(aveKey)!.push({ id: m.edge.id, min: minVal, max: maxVal });
+    } else {
+      const sAveKey = !isHorizontal ? m.sPos.row : m.sPos.col;
+      allAveKeys.add(sAveKey);
+      const streetCoord = computedStreetCoords.get(m.edge.id) || 0;
+      const depMin = !isHorizontal ? Math.min(m.sx, streetCoord) : Math.min(m.sy, streetCoord);
+      const depMax = !isHorizontal ? Math.max(m.sx, streetCoord) : Math.max(m.sy, streetCoord);
+      if (!depAvenues.has(sAveKey)) depAvenues.set(sAveKey, []);
+      depAvenues.get(sAveKey)!.push({ id: m.edge.id, min: depMin, max: depMax });
+
+      const tAveKey = !isHorizontal ? m.tPos.row - 1 : m.tPos.col - 1;
+      allAveKeys.add(tAveKey);
+      const arrMin = !isHorizontal ? Math.min(streetCoord, m.tx) : Math.min(streetCoord, m.ty);
+      const arrMax = !isHorizontal ? Math.max(streetCoord, m.tx) : Math.max(streetCoord, m.ty);
+      if (!arrAvenues.has(tAveKey)) arrAvenues.set(tAveKey, []);
+      arrAvenues.get(tAveKey)!.push({ id: m.edge.id, min: arrMin, max: arrMax });
+    }
+  });
+
+  const finalAveTracks = new Map<string, number>();
+  const avePitches = new Map<number, number>();
+
+  allAveKeys.forEach((aveKey) => {
+    const depList = depAvenues.get(aveKey) || [];
+    const adjList = adjAvenues.get(aveKey) || [];
+    const arrList = arrAvenues.get(aveKey) || [];
+
+    const depRes = assignTracks(depList, 12);
+    const adjRes = assignTracks(adjList, 12);
+    const arrRes = assignTracks(arrList, 12);
+
+    const totalInAve = depRes.totalTracks + adjRes.totalTracks + arrRes.totalTracks;
+    const pitch = Math.min(11.0, 180 / Math.max(1, totalInAve));
+    avePitches.set(aveKey, pitch);
+
+    const depOffset = 0;
+    const adjOffset = depRes.totalTracks;
+    const arrOffset = depRes.totalTracks + adjRes.totalTracks;
+
+    depRes.assignments.forEach((t, id) => finalAveTracks.set(`${id}_dep`, depOffset + t));
+    adjRes.assignments.forEach((t, id) => finalAveTracks.set(`${id}_adj`, adjOffset + t));
+    arrRes.assignments.forEach((t, id) => finalAveTracks.set(`${id}_arr`, arrOffset + t));
+  });
 
   const cableGeometries: ComputedCableGeometry[] = [];
   const baseByKv: Record<number, string[]> = { 500: [], 220: [], 132: [], 33: [], 13.2: [] };
   const animByKvSpeed: Record<string, { kv: number; speed: 'fast' | 'med' | 'slow'; paths: string[] }> = {};
 
-  activeEdgesRaw.forEach((e, idx) => {
+  activeEdgesRaw.forEach((e) => {
     const sPos = positions.get(String(e.source));
     const tPos = positions.get(String(e.target));
     if (!sPos || !tPos) return;
-
-    const sList = outBySource.get(String(e.source)) || [e];
-    const tList = inByTarget.get(String(e.target)) || [e];
-    const sIdx = sList.indexOf(e);
-    const tIdx = tList.indexOf(e);
-
-    const sStep = Math.min(14, 96 / Math.max(1, sList.length));
-    const tStep = Math.min(14, 96 / Math.max(1, tList.length));
-    const sOff = (sIdx - (sList.length - 1) / 2) * sStep;
-    const tOff = (tIdx - (tList.length - 1) / 2) * tStep;
 
     let sx = 0,
       sy = 0,
       tx = 0,
       ty = 0;
 
+    let geom: { d: string; pts: [number, number][] };
+
     if (isMap) {
       sx = sPos.x + 18;
       sy = sPos.y + 18;
       tx = tPos.x + 18;
       ty = tPos.y + 18;
-    } else if (!isHorizontal) {
-      sx = sPos.x + HALF_BOX + sOff;
-      sy = sPos.y + BOX_SIZE;
-      tx = tPos.x + HALF_BOX + tOff;
-      ty = tPos.y;
+      geom = buildCurvedMapGeometry(sx, sy, tx, ty, e.curvature ?? 0.14);
     } else {
-      sx = sPos.x + BOX_SIZE;
-      sy = sPos.y + HALF_BOX + sOff;
-      tx = tPos.x;
-      ty = tPos.y + HALF_BOX + tOff;
+      const m = edgeRoutingMap.get(e.id);
+      if (!m) return;
+      sx = m.sx;
+      sy = m.sy;
+      tx = m.tx;
+      ty = m.ty;
+
+      const sAveKey = !isHorizontal ? m.sPos.row : m.sPos.col;
+      const tAveKey = !isHorizontal ? m.tPos.row - 1 : m.tPos.col - 1;
+      const aveBaseY = (!isHorizontal ? m.sPos.y : m.sPos.x) + BOX_SIZE + 18;
+
+      if (m.isAdjacent) {
+        const track = finalAveTracks.get(`${e.id}_adj`) || 0;
+        const pitch = avePitches.get(sAveKey) || 11.0;
+        const bend = aveBaseY + track * pitch;
+        geom = buildStreetAvenueGeometry(sx, sy, tx, ty, isHorizontal, true, bend, 0, 0);
+      } else {
+        const depTrack = finalAveTracks.get(`${e.id}_dep`) || 0;
+        const arrTrack = finalAveTracks.get(`${e.id}_arr`) || 0;
+
+        const depPitch = avePitches.get(sAveKey) || 11.0;
+        const arrPitch = avePitches.get(tAveKey) || 11.0;
+
+        const y1 = aveBaseY + depTrack * depPitch;
+        const tAveBaseY = (!isHorizontal ? m.tPos.y : m.tPos.x) - (ROW_PITCH - BOX_SIZE) + 18;
+        const y2 = tAveBaseY + arrTrack * arrPitch;
+        const xs = computedStreetCoords.get(e.id) || 0;
+
+        geom = buildStreetAvenueGeometry(sx, sy, tx, ty, isHorizontal, false, y1, y2, xs);
+      }
     }
-
-    const sRow = !isHorizontal ? Math.round(sPos.y / ROW_PITCH) : Math.round(sPos.x / ROW_PITCH);
-    const tRow = !isHorizontal ? Math.round(tPos.y / ROW_PITCH) : Math.round(tPos.x / ROW_PITCH);
-
-    const aveList = unifiedAvenueUsage.get(sRow) || [e];
-    const aveLane = aveList.indexOf(e);
-
-    const arrList = unifiedArrivalUsage.get(tRow) || [e];
-    const arrLane = arrList.indexOf(e);
-
-    const streetCol = !isHorizontal ? Math.round(tPos.x / COL_PITCH) : Math.round(tPos.y / COL_PITCH);
-    const stList = streetColUsage.get(streetCol) || [e];
-    const stIdx = stList.indexOf(e);
-    const stCount = stList.length;
-    const tgtCenter = !isHorizontal ? tPos.x + HALF_BOX : tPos.y + HALF_BOX;
-    const streetCenter = tgtCenter + COL_PITCH / 2;
-    const streetTrack = streetCenter + (stIdx - (stCount - 1) / 2) * 10.0;
-
-    const geom = isMap
-      ? buildCurvedMapGeometry(sx, sy, tx, ty, e.curvature ?? 0.14)
-      : buildStreetAvenueGeometry(
-          sx, sy, tx, ty,
-          isHorizontal,
-          aveLane,
-          arrLane,
-          streetTrack,
-          aveLane
-        );
 
     const factor = getRegionFactor(e.region);
     const liveAmperes = Math.round(e.amperes * factor);
