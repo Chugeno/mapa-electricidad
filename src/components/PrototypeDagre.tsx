@@ -696,50 +696,53 @@ function computeLayoutAndBatchedCables(
     directMatchUids.add(n.uid);
   });
 
-  const activeEdgesRaw = masterEdges.filter((e) => {
+  // Determinar qué cables corresponden al filtro activo
+  const activeEdgeIds = new Set<string>();
+  masterEdges.forEach((e) => {
     const srcId = String(e.source);
     const tgtId = String(e.target);
-    if (filterKv !== null && normalizeKvKey(e.kv) !== filterKv) return false;
-    if (!hasActiveFilter) return true;
-    if (filterKv !== null && !filterRole && !filterRegion && !filterTech && !q) {
-      return true;
+    const edgeMatchesKv = filterKv === null || normalizeKvKey(e.kv) === filterKv;
+
+    if (!hasActiveFilter) {
+      activeEdgeIds.add(e.id);
+      return;
     }
-    return directMatchUids.has(srcId) || directMatchUids.has(tgtId);
+
+    if (filterKv !== null && !filterRole && !filterRegion && !filterTech && !q) {
+      if (edgeMatchesKv) activeEdgeIds.add(e.id);
+    } else {
+      if (directMatchUids.has(srcId) || directMatchUids.has(tgtId)) {
+        activeEdgeIds.add(e.id);
+      }
+    }
   });
 
-  const visibleNodeUids = new Set<string>();
+  // Las estaciones iluminadas son las que coinciden directamente + sus contrapartes de intercambio
+  const illuminatedNodeUids = new Set<string>();
   if (!hasActiveFilter) {
-    masterNodes.forEach((n) => visibleNodeUids.add(n.uid));
+    masterNodes.forEach((n) => illuminatedNodeUids.add(n.uid));
   } else {
-    directMatchUids.forEach((id) => visibleNodeUids.add(id));
-    activeEdgesRaw.forEach((e) => {
-      visibleNodeUids.add(String(e.source));
-      visibleNodeUids.add(String(e.target));
+    directMatchUids.forEach((id) => illuminatedNodeUids.add(id));
+    masterEdges.forEach((e) => {
+      if (activeEdgeIds.has(e.id)) {
+        illuminatedNodeUids.add(String(e.source));
+        illuminatedNodeUids.add(String(e.target));
+      }
     });
   }
 
-  const visibleNodes = masterNodes
-    .filter((n) => visibleNodeUids.has(n.uid))
-    .map((n) => {
-      const isDirect = directMatchUids.has(n.uid);
-      const isDimmed = hasActiveFilter && !isDirect;
-      return {
-        ...n,
-        isDirectMatch: isDirect,
-        isDimmed
-      };
-    });
+  // POSICIONES PERMANENTES: En modo Plano Unifilar la cuadrícula nacional es FIJA y sagrada.
+  // Ninguna estación ni cable se mueve de casillero al filtrar; solo se atenúan los elementos secundarios.
   const positions = new Map<string, { x: number; y: number }>();
 
   if (!isMap) {
     const tiers: NodeRole[] = ['GEN', 'ET500', 'ET132', 'DIST', 'COOP'];
-    const totalCount = visibleNodes.length;
-    const maxCols = totalCount > 400 ? 32 : totalCount > 150 ? 20 : totalCount > 50 ? 12 : 8;
+    const maxCols = 32;
 
     let currentRowCursor = 0;
 
     tiers.forEach((tierRole) => {
-      const tierNodes = visibleNodes
+      const tierNodes = masterNodes
         .filter((n) => n.role === tierRole)
         .sort((a, b) => {
           const ra = REGION_ORDER[a.region] ?? 4;
@@ -776,7 +779,7 @@ function computeLayoutAndBatchedCables(
       currentRowCursor += numSubRows + 0.45;
     });
   } else {
-    visibleNodes.forEach((n) => {
+    masterNodes.forEach((n) => {
       positions.set(n.uid, { x: n.mapX - 18, y: n.mapY - 18 });
     });
   }
@@ -784,7 +787,7 @@ function computeLayoutAndBatchedCables(
   const outBySource = new Map<string, GridEdgeData[]>();
   const inByTarget = new Map<string, GridEdgeData[]>();
 
-  activeEdgesRaw.forEach((e) => {
+  masterEdges.forEach((e) => {
     const s = String(e.source);
     const t = String(e.target);
     if (!outBySource.has(s)) outBySource.set(s, []);
@@ -829,7 +832,7 @@ function computeLayoutAndBatchedCables(
   const edgeRoutingMap = new Map<string, EdgeRoutingMeta>();
 
   if (!isMap) {
-    activeEdgesRaw.forEach((e) => {
+    masterEdges.forEach((e) => {
       const sPos = positions.get(String(e.source));
       const tPos = positions.get(String(e.target));
       if (!sPos || !tPos) return;
@@ -980,7 +983,7 @@ function computeLayoutAndBatchedCables(
   const baseByKv: Record<number, string[]> = { 500: [], 220: [], 132: [], 33: [], 13.2: [] };
   const animByKvSpeed: Record<string, { kv: number; speed: 'fast' | 'med' | 'slow'; paths: string[] }> = {};
 
-  activeEdgesRaw.forEach((e) => {
+  masterEdges.forEach((e) => {
     const sPos = positions.get(String(e.source));
     const tPos = positions.get(String(e.target));
     if (!sPos || !tPos) return;
@@ -1036,9 +1039,7 @@ function computeLayoutAndBatchedCables(
     const kvKey = normalizeKvKey(e.kv);
     const speedBucket = getSpeedBucket(liveAmperes);
 
-    const srcDimmed = hasActiveFilter && !directMatchUids.has(String(e.source));
-    const tgtDimmed = hasActiveFilter && !directMatchUids.has(String(e.target));
-    const edgeDimmed = srcDimmed && tgtDimmed;
+    const edgeDimmed = !activeEdgeIds.has(e.id);
 
     const enrichedEdge: GridEdgeData = {
       ...e,
@@ -1075,11 +1076,14 @@ function computeLayoutAndBatchedCables(
     if (!baseByKv[kvKey]) baseByKv[kvKey] = [];
     baseByKv[kvKey].push(geom.d);
 
-    const bucketKey = `${kvKey}_${speedBucket}`;
-    if (!animByKvSpeed[bucketKey]) {
-      animByKvSpeed[bucketKey] = { kv: kvKey, speed: speedBucket, paths: [] };
+    // Solo animar cables activos en modo macro para evitar saturación de CPU
+    if (!edgeDimmed) {
+      const bucketKey = `${kvKey}_${speedBucket}`;
+      if (!animByKvSpeed[bucketKey]) {
+        animByKvSpeed[bucketKey] = { kv: kvKey, speed: speedBucket, paths: [] };
+      }
+      animByKvSpeed[bucketKey].paths.push(geom.d);
     }
-    animByKvSpeed[bucketKey].paths.push(geom.d);
   });
 
   let worldMinX = Infinity,
@@ -1087,7 +1091,7 @@ function computeLayoutAndBatchedCables(
     worldMaxX = -Infinity,
     worldMaxY = -Infinity;
 
-  const positionedNodes: GridNodeData[] = visibleNodes.map((n) => {
+  const positionedNodes: GridNodeData[] = masterNodes.map((n) => {
     const pos = positions.get(n.uid) || { x: 0, y: 0 };
     const factor = getRegionFactor(n.region);
     const liveAmperes = Math.round(n.amperes * factor);
@@ -1098,8 +1102,13 @@ function computeLayoutAndBatchedCables(
     if (pos.x + size > worldMaxX) worldMaxX = pos.x + size;
     if (pos.y + size > worldMaxY) worldMaxY = pos.y + size;
 
+    const isDirect = directMatchUids.has(n.uid);
+    const isDimmed = !illuminatedNodeUids.has(n.uid);
+
     return {
       ...n,
+      isDirectMatch: isDirect,
+      isDimmed,
       amperes: liveAmperes,
       x: pos.x,
       y: pos.y
@@ -1112,8 +1121,6 @@ function computeLayoutAndBatchedCables(
     worldMaxX = 500;
     worldMaxY = 500;
   }
-
-  // Solo 2 nodos fantasma 1x1px en el DOM para que fitView encuadre el mundo al instante sin montar 830 tarjetas DOM
   const boundsNodes: Node[] = [
     {
       id: '__bounds_tl',
@@ -1143,8 +1150,8 @@ function computeLayoutAndBatchedCables(
       speed: b.speed,
       d: b.paths.join(' ')
     })),
-    visibleCount: positionedNodes.length,
-    visibleEdgesCount: cableGeometries.length
+    visibleCount: hasActiveFilter ? positionedNodes.filter((n) => !n.isDimmed).length : masterNodes.length,
+    visibleEdgesCount: hasActiveFilter ? cableGeometries.filter((cg) => !cg.edge.isDimmed).length : masterEdges.length
   };
 }
 
@@ -1359,8 +1366,10 @@ const FlowSceneInner: React.FC<{
         const period = dashLen + gapLen;
 
         for (const speed of ['fast', 'med', 'slow'] as const) {
-          ctx.beginPath();
-          let hasVisibleSeg = false;
+          const activePath = new Path2D();
+          const dimmedPath = new Path2D();
+          let hasActiveSeg = false;
+          let hasDimmedSeg = false;
 
           for (let i = 0; i < cableGeometries.length; i++) {
             const cg = cableGeometries[i];
@@ -1373,6 +1382,9 @@ const FlowSceneInner: React.FC<{
             ) {
               continue;
             }
+
+            const isDim = Boolean(cg.edge.isDimmed);
+            const targetPath = isDim ? dimmedPath : activePath;
 
             const pts = cg.pts;
             for (let j = 0; j < pts.length - 1; j++) {
@@ -1420,24 +1432,35 @@ const FlowSceneInner: React.FC<{
                 }
               }
 
-              ctx.moveTo(x1, y1);
-              ctx.lineTo(x2, y2);
-              hasVisibleSeg = true;
+              targetPath.moveTo(x1, y1);
+              targetPath.lineTo(x2, y2);
+              if (isDim) hasDimmedSeg = true;
+              else hasActiveSeg = true;
             }
           }
 
-          if (hasVisibleSeg) {
+          // 1. Dibujar primero cables atenuados (fondo)
+          if (hasDimmedSeg) {
+            ctx.setLineDash([]);
+            ctx.globalAlpha = 0.12;
+            ctx.strokeStyle = cfg.color;
+            ctx.lineWidth = cfg.width * 0.75;
+            ctx.stroke(dimmedPath);
+          }
+
+          // 2. Dibujar encima cables activos resaltados (flujo animado)
+          if (hasActiveSeg) {
             ctx.setLineDash([]);
             ctx.globalAlpha = baseOpacity;
             ctx.strokeStyle = cfg.color;
             ctx.lineWidth = cfg.width;
-            ctx.stroke();
+            ctx.stroke(activePath);
 
             ctx.setLineDash([dashLen, gapLen]);
             ctx.globalAlpha = 0.96;
             const speedPx = SPEED_PX_PER_SEC[speed];
             ctx.lineDashOffset = -(dashPhaseRef.current * speedPx) % 240;
-            ctx.stroke();
+            ctx.stroke(activePath);
           }
         }
       }
@@ -1455,20 +1478,23 @@ const FlowSceneInner: React.FC<{
         }
         const cfg = VOLTAGE_CONFIG[cg.kvKey] || VOLTAGE_CONFIG[132];
         const cableWidth = cfg.width * 1.2;
+        const isDim = Boolean(cg.edge.isDimmed);
         ctx.setLineDash([]);
-        ctx.globalAlpha = 0.38;
+        ctx.globalAlpha = isDim ? 0.12 : 0.38;
         ctx.strokeStyle = cfg.color;
         ctx.lineWidth = cableWidth;
         ctx.stroke(cg.path2D);
 
-        const dashLen = Math.max(8, Math.round(cableWidth * 2.8));
-        const gapLen = Math.max(6, Math.round(cableWidth * 2.0));
-        ctx.setLineDash([dashLen, gapLen]);
-        ctx.globalAlpha = 0.96;
-        const speedPx = SPEED_PX_PER_SEC[cg.speedBucket];
-        ctx.lineDashOffset = -(dashPhaseRef.current * speedPx) % 240;
-        ctx.lineWidth = cableWidth;
-        ctx.stroke(cg.path2D);
+        if (!isDim) {
+          const dashLen = Math.max(8, Math.round(cableWidth * 2.8));
+          const gapLen = Math.max(6, Math.round(cableWidth * 2.0));
+          ctx.setLineDash([dashLen, gapLen]);
+          ctx.globalAlpha = 0.96;
+          const speedPx = SPEED_PX_PER_SEC[cg.speedBucket];
+          ctx.lineDashOffset = -(dashPhaseRef.current * speedPx) % 240;
+          ctx.lineWidth = cableWidth;
+          ctx.stroke(cg.path2D);
+        }
       }
     } else {
       // MODO MACRO LEJANO (vp.zoom < 0.25)
@@ -1631,7 +1657,7 @@ const FlowSceneInner: React.FC<{
       ctx.fillRect(n.x, n.y, BOX_SIZE, 5);
 
       if (!showDetail) {
-        // VISTA MACRO LEJANA (< 0.25x): Cuadrado limpio con ícono grande central de 66x66px (cero textos)
+        // VISTA MACRO LEJANA (< 0.25x): Cuadrado limpio y dot de tecnología (ultra liviano para 60fps constantes)
         const ibX = n.x + (BOX_SIZE - 66) / 2;
         const ibY = n.y + (BOX_SIZE - 66) / 2 + 2;
         ctx.fillStyle = isDimmed ? '#ECE8DE' : '#EFECE2';
@@ -1640,15 +1666,9 @@ const FlowSceneInner: React.FC<{
         ctx.lineWidth = isDimmed ? 1.0 : 1.8;
         ctx.strokeRect(ibX, ibY, 66, 66);
 
-        ctx.save();
-        ctx.translate(ibX + 15, ibY + 15);
-        ctx.scale(36 / 24, 36 / 24);
-        ctx.strokeStyle = isDimmed ? '#8A857A' : vCfg.color;
-        ctx.lineWidth = 2.0;
-        ctx.lineCap = 'round';
-        ctx.lineJoin = 'round';
-        ctx.stroke(iconPath);
-        ctx.restore();
+        // Centro limpio sin SVG pesado para zoom lejano
+        ctx.fillStyle = isDimmed ? '#A59F91' : vCfg.color;
+        ctx.fillRect(ibX + 18, ibY + 18, 30, 30);
       } else {
         // VISTA DETALLADA CERCANA (>= 0.25x): Nombre arriba, Ícono 42x42 al centro, Pastilla técnica abajo y Borneras
         // 1. Nombre arriba
