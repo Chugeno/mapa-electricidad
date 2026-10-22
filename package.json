@@ -1,0 +1,49 @@
+{
+  "name": "mapa-electricidad",
+  "version": "1.0.0",
+  "description": "SADI Industrial SCADA / CAD Dashboard",
+  "main": "server.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "start": "node server.js",
+    "ingest": "python3 scripts/ingest_sadi.py",
+    "audit": "node scripts/audit_headless.js"
+  },
+  "keywords": [
+    "sadi",
+    "scada",
+    "cammesa",
+    "argentina",
+    "webgl",
+    "threejs"
+  ],
+  "author": "Eugenio",
+  "license": "ISC",
+  "dependencies": {
+    "@dagrejs/dagre": "^3.1.1",
+    "@xyflow/react": "^12.12.0",
+    "compression": "^1.7.4",
+    "cors": "^2.8.5",
+    "express": "^4.21.0",
+    "lucide-react": "^0.446.0",
+    "node-fetch": "^3.3.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "three": "^0.169.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.3",
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/react": "^18.3.8",
+    "@types/react-dom": "^18.3.0",
+    "@types/three": "^0.169.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "autoprefixer": "^10.4.20",
+    "playwright": "^1.47.2",
+    "postcss": "^8.4.47",
+    "tailwindcss": "^3.4.13",
+    "typescript": "^5.6.2",
+    "vite": "^5.4.6"
+  }
+}

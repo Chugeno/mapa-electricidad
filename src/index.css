@@ -1,0 +1,67 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    border-radius: 0px !important;
+    box-shadow: none !important;
+    text-shadow: none !important;
+  }
+}
+
+.scada-panel {
+  background-color: rgba(9, 11, 14, 0.95);
+  border: 1px solid #1e293b;
+}
+
+.scada-panel-solid {
+  background-color: #090b0e;
+  border: 1px solid #1e293b;
+}
+
+.scada-header {
+  background-color: #07080a;
+  border-bottom: 1px solid #1e293b;
+}
+
+.scada-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  padding: 0.35rem 0.65rem;
+  border: 1px solid #1e293b;
+  background-color: #0c0e12;
+  color: #94a3b8;
+  cursor: pointer;
+  transition: background-color 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.scada-btn:hover {
+  background-color: #1e293b;
+  color: #f8fafc;
+}
+
+.scada-btn-active {
+  background-color: #1e293b;
+  border-color: #38bdf8;
+  color: #38bdf8;
+}
+
+.scada-input {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.75rem;
+  background-color: #07080a;
+  border: 1px solid #1e293b;
+  color: #f8fafc;
+  padding: 0.35rem 0.5rem;
+  outline: none;
+}
+
+.scada-input:focus {
+  border-color: #38bdf8;
+}

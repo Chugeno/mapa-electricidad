@@ -1,0 +1,136 @@
+{
+  "timestamp": "2026-10-22T22:23:07.671Z",
+  "status": "ONLINE 5M",
+  "sadi_total_mw": 17849,
+  "frequency_hz": 49.994966405246714,
+  "regions": {
+    "SADI": {
+      "demanda_mw": 17849,
+      "temperatura": 18.9,
+      "timestamp": "2026-10-22T19:15:00.000-0300",
+      "demAyer": 17540
+    },
+    "GBA": {
+      "demanda_mw": 6251,
+      "temperatura": 18.6,
+      "timestamp": "2026-10-22T19:15:00.000-0300",
+      "demAyer": 6169
+    },
+    "Litoral": {
+      "demanda_mw": 2022,
+      "temperatura": 19.2,
+      "timestamp": "2026-10-22T19:15:00.000-0300",
+      "demAyer": 1927
+    },
+    "Centro": {
+      "demanda_mw": 1545,
+      "temperatura": 0,
+      "timestamp": "2026-10-22T19:20:00.000-0300",
+      "demAyer": 1514
+    },
+    "Cuyo": {
+      "demanda_mw": 835,
+      "temperatura": 17.8,
+      "timestamp": "2026-10-22T19:15:00.000-0300",
+      "demAyer": 805
+    },
+    "NOA": {
+      "demanda_mw": 1633,
+      "temperatura": 28.9,
+      "timestamp": "2026-10-22T19:15:00.000-0300",
+      "demAyer": 1449
+    },
+    "NEA": {
+      "demanda_mw": 1225,
+      "temperatura": 21.8,
+      "timestamp": "2026-10-22T19:15:00.000-0300",
+      "demAyer": 1281
+    },
+    "Comahue": {
+      "demanda_mw": 750,
+      "temperatura": 0,
+      "timestamp": "2026-10-22T19:20:00.000-0300",
+      "demAyer": 672
+    },
+    "Patagonia": {
+      "demanda_mw": 1039,
+      "temperatura": 0,
+      "timestamp": "2026-10-22T19:20:00.000-0300",
+      "demAyer": 1064
+    },
+    "BAS": {
+      "demanda_mw": 2348,
+      "temperatura": 16.2,
+      "timestamp": "2026-10-22T19:15:00.000-0300",
+      "demAyer": 2412
+    }
+  },
+  "renovables": {
+    "momento": "2026-10-22T07:45:00.000-0300",
+    "eolica": 1379.94,
+    "fotovoltaica": 836.08,
+    "biocombustible": 230.85,
+    "hidraulica": 226.69,
+    "cubrimientoDem": 17.89,
+    "hidraulica50": 0,
+    "cubrimientoDemLey": 0
+  },
+  "corridors": {
+    "COMAHUE_GBA": {
+      "from": "Comahue",
+      "to": "GBA",
+      "nominal_kv": 500,
+      "flow_direction": 1,
+      "load_factor": 1.2599294117647057,
+      "speed": 1.4
+    },
+    "PATAGONIA_COMAHUE": {
+      "from": "Patagonia",
+      "to": "Comahue",
+      "nominal_kv": 500,
+      "flow_direction": 1,
+      "load_factor": 1.1429,
+      "speed": 1.1
+    },
+    "LITORAL_GBA": {
+      "from": "Litoral",
+      "to": "GBA",
+      "nominal_kv": 500,
+      "flow_direction": 1,
+      "load_factor": 1.2918333333333332,
+      "speed": 1.3
+    },
+    "NEA_LITORAL": {
+      "from": "NEA",
+      "to": "Litoral",
+      "nominal_kv": 500,
+      "flow_direction": 1,
+      "load_factor": 1.0208333333333333,
+      "speed": 1
+    },
+    "NOA_CENTRO": {
+      "from": "NOA",
+      "to": "Centro",
+      "nominal_kv": 500,
+      "flow_direction": 1,
+      "load_factor": 1.1664285714285714,
+      "speed": 0.95
+    },
+    "CUYO_CENTRO": {
+      "from": "Cuyo",
+      "to": "Centro",
+      "nominal_kv": 500,
+      "flow_direction": 1,
+      "load_factor": 1.04375,
+      "speed": 0.9
+    },
+    "CENTRO_GBA": {
+      "from": "Centro",
+      "to": "GBA",
+      "nominal_kv": 500,
+      "flow_direction": 1,
+      "load_factor": 0.9441666666666667,
+      "speed": 1.2
+    }
+  }
+}
