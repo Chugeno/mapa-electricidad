@@ -980,8 +980,7 @@ function computeLayoutAndBatchedCables(
   });
 
   const cableGeometries: ComputedCableGeometry[] = [];
-  const baseDimmedByKv: Record<number, string[]> = { 500: [], 220: [], 132: [], 33: [], 13.2: [] };
-  const baseActiveByKv: Record<number, string[]> = { 500: [], 220: [], 132: [], 33: [], 13.2: [] };
+  const baseByKv: Record<number, string[]> = { 500: [], 220: [], 132: [], 33: [], 13.2: [] };
   const animByKvSpeed: Record<string, { kv: number; speed: 'fast' | 'med' | 'slow'; paths: string[] }> = {};
 
   masterEdges.forEach((e) => {
@@ -1074,13 +1073,11 @@ function computeLayoutAndBatchedCables(
       path2D: typeof Path2D !== 'undefined' ? new Path2D(geom.d) : undefined
     });
 
-    if (edgeDimmed) {
-      if (!baseDimmedByKv[kvKey]) baseDimmedByKv[kvKey] = [];
-      baseDimmedByKv[kvKey].push(geom.d);
-    } else {
-      if (!baseActiveByKv[kvKey]) baseActiveByKv[kvKey] = [];
-      baseActiveByKv[kvKey].push(geom.d);
+    if (!baseByKv[kvKey]) baseByKv[kvKey] = [];
+    baseByKv[kvKey].push(geom.d);
 
+    // Solo animar cables activos en modo macro para evitar saturación de CPU
+    if (!edgeDimmed) {
       const bucketKey = `${kvKey}_${speedBucket}`;
       if (!animByKvSpeed[bucketKey]) {
         animByKvSpeed[bucketKey] = { kv: kvKey, speed: speedBucket, paths: [] };
@@ -1168,13 +1165,9 @@ function computeLayoutAndBatchedCables(
     cableGeometries,
     dimmedCables,
     activeCables,
-    batchedDimmedBase: VOLTAGE_ORDER.map((kv) => ({
+    batchedBase: VOLTAGE_ORDER.map((kv) => ({
       kv,
-      d: (baseDimmedByKv[kv] || []).join(' ')
-    })).filter((b) => b.d.length > 0),
-    batchedActiveBase: VOLTAGE_ORDER.map((kv) => ({
-      kv,
-      d: (baseActiveByKv[kv] || []).join(' ')
+      d: (baseByKv[kv] || []).join(' ')
     })).filter((b) => b.d.length > 0),
     batchedAnim: Object.values(animByKvSpeed).map((b) => ({
       key: `${b.kv}_${b.speed}`,
@@ -1240,8 +1233,7 @@ const FlowSceneInner: React.FC<{
     cableGeometries,
     dimmedCables,
     activeCables,
-    batchedDimmedBase,
-    batchedActiveBase,
+    batchedBase,
     batchedAnim,
     visibleCount,
     visibleEdgesCount
@@ -1321,13 +1313,7 @@ const FlowSceneInner: React.FC<{
       });
     }
 
-    const dimmedBase2D = batchedDimmedBase.map((b) => ({
-      kv: b.kv,
-      cfg: VOLTAGE_CONFIG[b.kv] || VOLTAGE_CONFIG[132],
-      path: new Path2D(b.d)
-    }));
-
-    const activeBase2D = batchedActiveBase.map((b) => ({
+    const base2D = batchedBase.map((b) => ({
       kv: b.kv,
       cfg: VOLTAGE_CONFIG[b.kv] || VOLTAGE_CONFIG[132],
       path: new Path2D(b.d)
@@ -1347,8 +1333,8 @@ const FlowSceneInner: React.FC<{
       };
     });
 
-    return { provincePath2D, wfsPaths2D, dimmedBase2D, activeBase2D, anim2D };
-  }, [layoutMode, provinces, showFullWfs, topology, batchedDimmedBase, batchedActiveBase, batchedAnim]);
+    return { provincePath2D, wfsPaths2D, base2D, anim2D };
+  }, [layoutMode, provinces, showFullWfs, topology, batchedBase, batchedAnim]);
 
   // Motor unificado de pintado en Canvas 2D:
   // Dibuja Provincias + Cables + Estaciones recortando estrictamente al área visible en pantalla (Viewport Culling)
@@ -1403,47 +1389,83 @@ const FlowSceneInner: React.FC<{
       }
     }
 
-    // 2. CABLES DE TRANSMISIÓN (100% BATCHED EN GPU - CERO ITERACIONES INDIVIDUALES A 60 FPS)
-    const isCloseZoom = vp.zoom >= (isMap ? MAP_LOD_ZOOM : PLANO_LOD_ZOOM);
-    const hasFilter = Boolean(filterKv !== null || filterRole || filterRegion || filterTech || searchQuery);
+    // 2. CABLES (En zoom cercano usa cableGeometries con viewport culling; en zoom lejano usa Path2D batcheados)
+    if (vp.zoom >= 0.25) {
+      // 1. Cables atenuados (fondo estático sin animación)
+      if (dimmedCables.length > 0) {
+        ctx.setLineDash([]);
+        ctx.globalAlpha = 0.12;
+        for (let i = 0; i < dimmedCables.length; i++) {
+          const cg = dimmedCables[i];
+          if (
+            cg.maxX < viewMinX ||
+            cg.minX > viewMaxX ||
+            cg.maxY < viewMinY ||
+            cg.minY > viewMaxY ||
+            !cg.path2D
+          ) {
+            continue;
+          }
+          const cfg = VOLTAGE_CONFIG[cg.kvKey] || VOLTAGE_CONFIG[132];
+          ctx.strokeStyle = cfg.color;
+          ctx.lineWidth = cfg.width * (isMap ? 1.2 : 1.0);
+          ctx.stroke(cg.path2D);
+        }
+      }
 
-    // 1. Cables atenuados (fondo estático continuo sin animación)
-    if (compiledPaths.dimmedBase2D.length > 0) {
+      // 2. Cables activos resaltados (trazo base + flujo animado)
+      for (let i = 0; i < activeCables.length; i++) {
+        const cg = activeCables[i];
+        if (
+          cg.maxX < viewMinX ||
+          cg.minX > viewMaxX ||
+          cg.maxY < viewMinY ||
+          cg.minY > viewMaxY ||
+          !cg.path2D
+        ) {
+          continue;
+        }
+        const cfg = VOLTAGE_CONFIG[cg.kvKey] || VOLTAGE_CONFIG[132];
+        const cableWidth = cfg.width * (isMap ? 1.2 : 1.0);
+
+        ctx.setLineDash([]);
+        ctx.globalAlpha = 0.38;
+        ctx.strokeStyle = cfg.color;
+        ctx.lineWidth = cableWidth;
+        ctx.stroke(cg.path2D);
+
+        const dashLen = Math.max(8, Math.round(cableWidth * 2.8));
+        const gapLen = Math.max(6, Math.round(cableWidth * 2.0));
+        ctx.setLineDash([dashLen, gapLen]);
+        ctx.globalAlpha = 0.96;
+        const speedPx = SPEED_PX_PER_SEC[cg.speedBucket];
+        ctx.lineDashOffset = -(dashPhaseRef.current * speedPx) % 240;
+        ctx.lineWidth = cableWidth;
+        ctx.stroke(cg.path2D);
+      }
+    } else {
+      // MODO MACRO LEJANO (vp.zoom < 0.25)
+      const hasFilter = Boolean(filterKv !== null || filterRole || filterRegion || filterTech || searchQuery);
       ctx.setLineDash([]);
-      ctx.globalAlpha = 0.12;
-      for (let i = 0; i < compiledPaths.dimmedBase2D.length; i++) {
-        const b = compiledPaths.dimmedBase2D[i];
+      ctx.globalAlpha = hasFilter ? 0.14 : (layoutMode === 'MAP' ? 0.36 : 0.28);
+      for (const b of compiledPaths.base2D) {
         ctx.strokeStyle = b.cfg.color;
-        ctx.lineWidth = b.cfg.width * (isMap ? 1.2 : 1.0);
+        ctx.lineWidth = b.cfg.width;
         ctx.stroke(b.path);
       }
-    }
 
-    // 2. Cables activos (trazo base continuo)
-    ctx.setLineDash([]);
-    ctx.globalAlpha = 0.38;
-    for (let i = 0; i < compiledPaths.activeBase2D.length; i++) {
-      const b = compiledPaths.activeBase2D[i];
-      ctx.strokeStyle = b.cfg.color;
-      ctx.lineWidth = b.cfg.width * (isMap ? 1.2 : 1.0);
-      ctx.stroke(b.path);
-    }
-
-    // 3. Flujo dinámico animado
-    // En zoom lejano (< 0.25x) sin filtro animamos solo 500kV y 220kV.
-    // Al acercarse (zoom >= 0.25x) o con filtro activo, ¡animamos TODAS las líneas activas!
-    ctx.globalAlpha = 0.96;
-    for (let i = 0; i < compiledPaths.anim2D.length; i++) {
-      const a = compiledPaths.anim2D[i];
-      if (!isCloseZoom && !hasFilter && a.kv < 220) {
-        continue;
+      for (const a of compiledPaths.anim2D) {
+        if (!hasFilter && a.kv < 220) {
+          continue; // Ya están dibujadas una vez en compiledPaths.base2D
+        }
+        ctx.globalAlpha = 0.96;
+        ctx.strokeStyle = a.cfg.color;
+        ctx.lineWidth = a.cfg.width;
+        ctx.setLineDash(a.dash);
+        const speedPx = SPEED_PX_PER_SEC[a.speed];
+        ctx.lineDashOffset = -(dashPhaseRef.current * speedPx) % 240;
+        ctx.stroke(a.path);
       }
-      ctx.strokeStyle = a.cfg.color;
-      ctx.lineWidth = a.cfg.width * (isMap ? 1.2 : 1.0);
-      ctx.setLineDash(a.dash);
-      const speedPx = SPEED_PX_PER_SEC[a.speed];
-      ctx.lineDashOffset = -(dashPhaseRef.current * speedPx) % 240;
-      ctx.stroke(a.path);
     }
 
     // 3. DIBUJAR LAS ESTACIONES EN CANVAS (CON VIEWPORT CULLING + ORDEN DE SUPERPOSICIÓN: ATENUADOS ATRÁS, RESALTADOS ADELANTE)
@@ -1690,9 +1712,9 @@ const FlowSceneInner: React.FC<{
 
     const tick = (now: number) => {
       const dt = (now - lastTs) / 1000;
-      lastTs = now;
-      if (!isPanningRef.current) {
+      if (!isPanningRef.current && dt >= 0.032) {
         dashPhaseRef.current += dt;
+        lastTs = now;
         renderCanvasFrame();
       }
       animId = requestAnimationFrame(tick);
