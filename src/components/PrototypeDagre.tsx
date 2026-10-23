@@ -1456,12 +1456,7 @@ const FlowSceneInner: React.FC<{
 
       for (const a of compiledPaths.anim2D) {
         if (!hasFilter && a.kv < 220) {
-          ctx.setLineDash([]);
-          ctx.globalAlpha = 0.55;
-          ctx.strokeStyle = a.cfg.color;
-          ctx.lineWidth = a.cfg.width;
-          ctx.stroke(a.path);
-          continue;
+          continue; // Ya están dibujadas una vez en compiledPaths.base2D
         }
         ctx.globalAlpha = 0.96;
         ctx.strokeStyle = a.cfg.color;
