@@ -735,11 +735,23 @@ function computeLayoutAndBatchedCables(
   // Ninguna estación ni cable se mueve de casillero al filtrar; solo se atenúan los elementos secundarios.
   const positions = new Map<string, { x: number; y: number }>();
 
+  // Regla estricta de separación: paso mínimo de 9.0px entre líneas paralelas
+  // Garantiza entre 4.4px y 7.5px de espacio libre visible entre bordes de cables de cualquier nivel de tensión.
+  const MIN_CABLE_PITCH = 9.0;
+  const BASE_AVE_HEIGHT = 180;
+  const BASE_STREET_WIDTH = 156;
+
+  interface LogicalNodeGrid {
+    row: number;
+    col: number;
+    role: NodeRole;
+  }
+  const logicalGrid = new Map<string, LogicalNodeGrid>();
+  let totalGridRows = 0;
+  const maxCols = 32;
+
   if (!isMap) {
     const tiers: NodeRole[] = ['GEN', 'ET500', 'ET132', 'DIST', 'COOP'];
-    const maxCols = 32;
-
-    let currentRowCursor = 0;
 
     tiers.forEach((tierRole) => {
       const tierNodes = masterNodes
@@ -764,25 +776,28 @@ function computeLayoutAndBatchedCables(
 
         const offsetCols = Math.floor((maxCols - itemsInThisSubRow) / 2);
         const finalCol = colInRow + offsetCols;
-        const finalRow = currentRowCursor + subRow;
+        const finalRow = totalGridRows + subRow;
 
-        const cx = finalCol * COL_PITCH;
-        const cy = finalRow * ROW_PITCH;
-
-        if (!isHorizontal) {
-          positions.set(node.uid, { x: cx - HALF_BOX, y: cy - HALF_BOX });
-        } else {
-          positions.set(node.uid, { x: cy - HALF_BOX, y: cx - HALF_BOX });
-        }
+        logicalGrid.set(node.uid, { row: finalRow, col: finalCol, role: tierRole });
       });
 
-      currentRowCursor += numSubRows + 0.45;
+      totalGridRows += numSubRows;
     });
   } else {
     masterNodes.forEach((n) => {
       positions.set(n.uid, { x: n.mapX - 18, y: n.mapY - 18 });
     });
   }
+
+  // Pre-cálculo de terminales y ruteo determinista libre de colisiones
+  interface EdgeRoutingMeta {
+    edge: GridEdgeData;
+    sGrid: LogicalNodeGrid;
+    tGrid: LogicalNodeGrid;
+    isAdjacent: boolean;
+    streetCol: number;
+  }
+  const edgeRoutingMetaList: EdgeRoutingMeta[] = [];
 
   const outBySource = new Map<string, GridEdgeData[]>();
   const inByTarget = new Map<string, GridEdgeData[]>();
@@ -796,188 +811,123 @@ function computeLayoutAndBatchedCables(
     inByTarget.get(t)!.push(e);
   });
 
-  // En modo plano: ordenar pines terminales de salida y entrada para que los cables salgan y lleguen paralelos
   if (!isMap) {
     for (const list of outBySource.values()) {
       list.sort((a, b) => {
-        const pa = positions.get(String(a.target));
-        const pb = positions.get(String(b.target));
-        if (!pa || !pb) return 0;
-        return isHorizontal ? pa.y - pb.y : pa.x - pb.x;
+        const ga = logicalGrid.get(String(a.target));
+        const gb = logicalGrid.get(String(b.target));
+        if (!ga || !gb) return 0;
+        return isHorizontal ? ga.row - gb.row : ga.col - gb.col;
       });
     }
     for (const list of inByTarget.values()) {
       list.sort((a, b) => {
-        const pa = positions.get(String(a.source));
-        const pb = positions.get(String(b.source));
-        if (!pa || !pb) return 0;
-        return isHorizontal ? pa.y - pb.y : pa.x - pb.x;
+        const ga = logicalGrid.get(String(a.source));
+        const gb = logicalGrid.get(String(b.source));
+        if (!ga || !gb) return 0;
+        return isHorizontal ? ga.row - gb.row : ga.col - gb.col;
       });
     }
-  }
 
-  // Pre-cálculo de terminales y ruteo determinista libre de colisiones (Left-Edge Channel Routing)
-  interface EdgeRoutingMeta {
-    edge: GridEdgeData;
-    sx: number;
-    sy: number;
-    tx: number;
-    ty: number;
-    sPos: { x: number; y: number; col: number; row: number };
-    tPos: { x: number; y: number; col: number; row: number };
-    isAdjacent: boolean;
-    streetColKey: number;
-  }
-
-  const edgeRoutingMap = new Map<string, EdgeRoutingMeta>();
-
-  if (!isMap) {
     masterEdges.forEach((e) => {
-      const sPos = positions.get(String(e.source));
-      const tPos = positions.get(String(e.target));
-      if (!sPos || !tPos) return;
+      const sGrid = logicalGrid.get(String(e.source));
+      const tGrid = logicalGrid.get(String(e.target));
+      if (!sGrid || !tGrid) return;
 
-      const sList = outBySource.get(String(e.source)) || [e];
-      const tList = inByTarget.get(String(e.target)) || [e];
-      const sIdx = sList.indexOf(e);
-      const tIdx = tList.indexOf(e);
+      const isAdjacent = tGrid.row - sGrid.row === 1;
+      const streetCol = sGrid.col;
 
-      const sStep = Math.min(14, 96 / Math.max(1, sList.length));
-      const tStep = Math.min(14, 96 / Math.max(1, tList.length));
-      const sOff = (sIdx - (sList.length - 1) / 2) * sStep;
-      const tOff = (tIdx - (tList.length - 1) / 2) * tStep;
-
-      let sx = 0,
-        sy = 0,
-        tx = 0,
-        ty = 0;
-
-      if (!isHorizontal) {
-        sx = sPos.x + HALF_BOX + sOff;
-        sy = sPos.y + BOX_SIZE;
-        tx = tPos.x + HALF_BOX + tOff;
-        ty = tPos.y;
-      } else {
-        sx = sPos.x + BOX_SIZE;
-        sy = sPos.y + HALF_BOX + sOff;
-        tx = tPos.x;
-        ty = tPos.y + HALF_BOX + tOff;
-      }
-
-      const sMain = !isHorizontal ? sy : sx;
-      const tMain = !isHorizontal ? ty : tx;
-      const deltaMain = tMain - sMain;
-
-      const isAdjacent = deltaMain > 10 && deltaMain <= ROW_PITCH * 1.6 - BOX_SIZE + 24;
-
-      const sCol = !isHorizontal ? Math.round(sPos.x / COL_PITCH) : Math.round(sPos.y / COL_PITCH);
-      const tCol = !isHorizontal ? Math.round(tPos.x / COL_PITCH) : Math.round(tPos.y / COL_PITCH);
-      const sRow = !isHorizontal ? Math.round(sPos.y / ROW_PITCH) : Math.round(sPos.x / ROW_PITCH);
-      const tRow = !isHorizontal ? Math.round(tPos.y / ROW_PITCH) : Math.round(tPos.x / ROW_PITCH);
-
-      const streetColKey = sCol !== tCol ? (sCol < tCol ? sCol : tCol) : sCol;
-
-      edgeRoutingMap.set(e.id, {
+      edgeRoutingMetaList.push({
         edge: e,
-        sx,
-        sy,
-        tx,
-        ty,
-        sPos: { ...sPos, col: sCol, row: sRow },
-        tPos: { ...tPos, col: tCol, row: tRow },
+        sGrid,
+        tGrid,
         isAdjacent,
-        streetColKey
+        streetCol
       });
     });
   }
 
-  // 1. Asignación de canales verticales (calles)
+  // 1. Asignación de canales verticales en calles entre columnas
   const streetIntervals = new Map<number, { id: string; min: number; max: number }[]>();
-  edgeRoutingMap.forEach((m) => {
+  edgeRoutingMetaList.forEach((m) => {
     if (m.isAdjacent) return;
-    const colKey = m.streetColKey;
-    const vMin = !isHorizontal ? Math.min(m.sPos.y, m.tPos.y) - 60 : Math.min(m.sPos.x, m.tPos.x) - 60;
-    const vMax = !isHorizontal ? Math.max(m.sPos.y, m.tPos.y) + ROW_PITCH : Math.max(m.sPos.x, m.tPos.x) + ROW_PITCH;
-
+    const colKey = m.streetCol;
     if (!streetIntervals.has(colKey)) streetIntervals.set(colKey, []);
-    streetIntervals.get(colKey)!.push({ id: m.edge.id, min: vMin, max: vMax });
+    const minRow = Math.min(m.sGrid.row, m.tGrid.row);
+    const maxRow = Math.max(m.sGrid.row, m.tGrid.row);
+    streetIntervals.get(colKey)!.push({ id: m.edge.id, min: minRow, max: maxRow });
   });
 
   const streetAssignments = new Map<string, number>();
-  const streetTotalTracks = new Map<number, number>();
-  streetIntervals.forEach((intervals, colKey) => {
-    const { assignments, totalTracks } = assignTracks(intervals, 12);
+  const streetTrackCounts = new Map<number, number>();
+  for (let c = 0; c < maxCols; c++) {
+    const intervals = streetIntervals.get(c) || [];
+    const { assignments, totalTracks } = assignTracks(intervals, 1);
     assignments.forEach((track, id) => streetAssignments.set(id, track));
-    streetTotalTracks.set(colKey, totalTracks);
-  });
+    streetTrackCounts.set(c, totalTracks);
+  }
 
-  const computedStreetCoords = new Map<string, number>();
-  edgeRoutingMap.forEach((m) => {
-    if (m.isAdjacent) return;
-    const colKey = m.streetColKey;
-    const track = streetAssignments.get(m.edge.id) || 0;
-    const totalT = streetTotalTracks.get(colKey) || 1;
-    const pitch = Math.min(11.0, 130 / Math.max(1, totalT));
-    const baseStreetX = colKey * COL_PITCH + HALF_BOX + 14;
-    computedStreetCoords.set(m.edge.id, baseStreetX + track * pitch);
-  });
-
-  // 2. Asignación de canales horizontales (avenidas)
-  const depAvenues = new Map<number, { id: string; min: number; max: number }[]>();
-  const adjAvenues = new Map<number, { id: string; min: number; max: number }[]>();
-  const arrAvenues = new Map<number, { id: string; min: number; max: number }[]>();
-  const allAveKeys = new Set<number>();
-
-  edgeRoutingMap.forEach((m) => {
+  // 2. Asignación unificada de canales horizontales en avenidas entre filas
+  const aveIntervals = new Map<number, { id: string; min: number; max: number }[]>();
+  edgeRoutingMetaList.forEach((m) => {
     if (m.isAdjacent) {
-      const aveKey = !isHorizontal ? m.sPos.row : m.sPos.col;
-      allAveKeys.add(aveKey);
-      const minVal = !isHorizontal ? Math.min(m.sx, m.tx) : Math.min(m.sy, m.ty);
-      const maxVal = !isHorizontal ? Math.max(m.sx, m.tx) : Math.max(m.sy, m.ty);
-      if (!adjAvenues.has(aveKey)) adjAvenues.set(aveKey, []);
-      adjAvenues.get(aveKey)!.push({ id: m.edge.id, min: minVal, max: maxVal });
+      const r = m.sGrid.row;
+      if (!aveIntervals.has(r)) aveIntervals.set(r, []);
+      const minCol = Math.min(m.sGrid.col, m.tGrid.col);
+      const maxCol = Math.max(m.sGrid.col, m.tGrid.col);
+      aveIntervals.get(r)!.push({ id: `${m.edge.id}_adj`, min: minCol, max: maxCol });
     } else {
-      const sAveKey = !isHorizontal ? m.sPos.row : m.sPos.col;
-      allAveKeys.add(sAveKey);
-      const streetCoord = computedStreetCoords.get(m.edge.id) || 0;
-      const depMin = !isHorizontal ? Math.min(m.sx, streetCoord) : Math.min(m.sy, streetCoord);
-      const depMax = !isHorizontal ? Math.max(m.sx, streetCoord) : Math.max(m.sy, streetCoord);
-      if (!depAvenues.has(sAveKey)) depAvenues.set(sAveKey, []);
-      depAvenues.get(sAveKey)!.push({ id: m.edge.id, min: depMin, max: depMax });
+      const sR = m.sGrid.row;
+      const tR = Math.max(0, m.tGrid.row - 1);
+      if (!aveIntervals.has(sR)) aveIntervals.set(sR, []);
+      const minDepCol = Math.min(m.sGrid.col, m.streetCol);
+      const maxDepCol = Math.max(m.sGrid.col, m.streetCol);
+      aveIntervals.get(sR)!.push({ id: `${m.edge.id}_dep`, min: minDepCol, max: maxDepCol });
 
-      const tAveKey = !isHorizontal ? m.tPos.row - 1 : m.tPos.col - 1;
-      allAveKeys.add(tAveKey);
-      const arrMin = !isHorizontal ? Math.min(streetCoord, m.tx) : Math.min(streetCoord, m.ty);
-      const arrMax = !isHorizontal ? Math.max(streetCoord, m.tx) : Math.max(streetCoord, m.ty);
-      if (!arrAvenues.has(tAveKey)) arrAvenues.set(tAveKey, []);
-      arrAvenues.get(tAveKey)!.push({ id: m.edge.id, min: arrMin, max: arrMax });
+      if (!aveIntervals.has(tR)) aveIntervals.set(tR, []);
+      const minArrCol = Math.min(m.streetCol, m.tGrid.col);
+      const maxArrCol = Math.max(m.streetCol, m.tGrid.col);
+      aveIntervals.get(tR)!.push({ id: `${m.edge.id}_arr`, min: minArrCol, max: maxArrCol });
     }
   });
 
-  const finalAveTracks = new Map<string, number>();
-  const avePitches = new Map<number, number>();
+  const aveAssignments = new Map<string, number>();
+  const aveTrackCounts = new Map<number, number>();
+  for (let r = 0; r < totalGridRows; r++) {
+    const intervals = aveIntervals.get(r) || [];
+    const { assignments, totalTracks } = assignTracks(intervals, 1);
+    assignments.forEach((track, id) => aveAssignments.set(id, track));
+    aveTrackCounts.set(r, totalTracks);
+  }
 
-  allAveKeys.forEach((aveKey) => {
-    const depList = depAvenues.get(aveKey) || [];
-    const adjList = adjAvenues.get(aveKey) || [];
-    const arrList = arrAvenues.get(aveKey) || [];
+  // 3. Posicionamiento físico dinámico ("Separar SOLO si es necesario"):
+  // Corredores con pocos cables mantienen la distancia compacta base.
+  // Corredores con alta densidad de vínculos se expanden lo necesario para garantizar MIN_CABLE_PITCH (9.0px).
+  const colCoords: number[] = [0];
+  for (let c = 0; c < maxCols; c++) {
+    const tracks = streetTrackCounts.get(c) || 0;
+    const neededW = Math.max(BASE_STREET_WIDTH, tracks * MIN_CABLE_PITCH + 32);
+    colCoords.push(colCoords[c] + BOX_SIZE + neededW);
+  }
 
-    const depRes = assignTracks(depList, 12);
-    const adjRes = assignTracks(adjList, 12);
-    const arrRes = assignTracks(arrList, 12);
+  const rowCoords: number[] = [0];
+  for (let r = 0; r < totalGridRows; r++) {
+    const tracks = aveTrackCounts.get(r) || 0;
+    const neededH = Math.max(BASE_AVE_HEIGHT, tracks * MIN_CABLE_PITCH + 36);
+    rowCoords.push(rowCoords[r] + BOX_SIZE + neededH);
+  }
 
-    const totalInAve = depRes.totalTracks + adjRes.totalTracks + arrRes.totalTracks;
-    const pitch = Math.min(11.0, 180 / Math.max(1, totalInAve));
-    avePitches.set(aveKey, pitch);
-
-    const depOffset = 0;
-    const adjOffset = depRes.totalTracks;
-    const arrOffset = depRes.totalTracks + adjRes.totalTracks;
-
-    depRes.assignments.forEach((t, id) => finalAveTracks.set(`${id}_dep`, depOffset + t));
-    adjRes.assignments.forEach((t, id) => finalAveTracks.set(`${id}_adj`, adjOffset + t));
-    arrRes.assignments.forEach((t, id) => finalAveTracks.set(`${id}_arr`, arrOffset + t));
-  });
+  if (!isMap) {
+    logicalGrid.forEach((grid, uid) => {
+      const cX = colCoords[grid.col];
+      const rY = rowCoords[grid.row];
+      if (!isHorizontal) {
+        positions.set(uid, { x: cX, y: rY });
+      } else {
+        positions.set(uid, { x: rY, y: cX });
+      }
+    });
+  }
 
   const cableGeometries: ComputedCableGeometry[] = [];
   const baseDimmedByKv: Record<number, string[]> = { 500: [], 220: [], 132: [], 33: [], 13.2: [] };
@@ -1003,33 +953,58 @@ function computeLayoutAndBatchedCables(
       ty = tPos.y + 18;
       geom = buildCurvedMapGeometry(sx, sy, tx, ty, e.curvature ?? 0.14);
     } else {
-      const m = edgeRoutingMap.get(e.id);
-      if (!m) return;
-      sx = m.sx;
-      sy = m.sy;
-      tx = m.tx;
-      ty = m.ty;
+      const sGrid = logicalGrid.get(String(e.source));
+      const tGrid = logicalGrid.get(String(e.target));
+      if (!sGrid || !tGrid) return;
 
-      const sAveKey = !isHorizontal ? m.sPos.row : m.sPos.col;
-      const tAveKey = !isHorizontal ? m.tPos.row - 1 : m.tPos.col - 1;
-      const aveBaseY = (!isHorizontal ? m.sPos.y : m.sPos.x) + BOX_SIZE + 18;
+      const sList = outBySource.get(String(e.source)) || [e];
+      const tList = inByTarget.get(String(e.target)) || [e];
+      const sIdx = sList.indexOf(e);
+      const tIdx = tList.indexOf(e);
 
-      if (m.isAdjacent) {
-        const track = finalAveTracks.get(`${e.id}_adj`) || 0;
-        const pitch = avePitches.get(sAveKey) || 11.0;
-        const bend = aveBaseY + track * pitch;
+      const sStep = Math.min(10, 88 / Math.max(1, sList.length));
+      const tStep = Math.min(10, 88 / Math.max(1, tList.length));
+      const sOff = (sIdx - (sList.length - 1) / 2) * sStep;
+      const tOff = (tIdx - (tList.length - 1) / 2) * tStep;
+
+      const sBoxX = !isHorizontal ? colCoords[sGrid.col] : rowCoords[sGrid.row];
+      const sBoxY = !isHorizontal ? rowCoords[sGrid.row] : colCoords[sGrid.col];
+      const tBoxX = !isHorizontal ? colCoords[tGrid.col] : rowCoords[tGrid.row];
+      const tBoxY = !isHorizontal ? rowCoords[tGrid.row] : colCoords[tGrid.col];
+
+      if (!isHorizontal) {
+        sx = sBoxX + HALF_BOX + sOff;
+        sy = sBoxY + BOX_SIZE;
+        tx = tBoxX + HALF_BOX + tOff;
+        ty = tBoxY;
+      } else {
+        sx = sBoxX + BOX_SIZE;
+        sy = sBoxY + HALF_BOX + sOff;
+        tx = tBoxX;
+        ty = tBoxY + HALF_BOX + tOff;
+      }
+
+      const isAdjacent = tGrid.row - sGrid.row === 1;
+
+      if (isAdjacent) {
+        const track = aveAssignments.get(`${e.id}_adj`) || 0;
+        const aveBase = (!isHorizontal ? rowCoords[sGrid.row] : colCoords[sGrid.col]) + BOX_SIZE + 18;
+        const bend = aveBase + track * MIN_CABLE_PITCH;
         geom = buildStreetAvenueGeometry(sx, sy, tx, ty, isHorizontal, true, bend, 0, 0);
       } else {
-        const depTrack = finalAveTracks.get(`${e.id}_dep`) || 0;
-        const arrTrack = finalAveTracks.get(`${e.id}_arr`) || 0;
+        const depTrack = aveAssignments.get(`${e.id}_dep`) || 0;
+        const arrTrack = aveAssignments.get(`${e.id}_arr`) || 0;
+        const streetTrack = streetAssignments.get(e.id) || 0;
 
-        const depPitch = avePitches.get(sAveKey) || 11.0;
-        const arrPitch = avePitches.get(tAveKey) || 11.0;
+        const streetCol = sGrid.col;
+        const sAveBase = (!isHorizontal ? rowCoords[sGrid.row] : colCoords[sGrid.col]) + BOX_SIZE + 18;
+        const arrRowIdx = Math.max(0, tGrid.row - 1);
+        const tAveBase = (!isHorizontal ? rowCoords[arrRowIdx] : colCoords[arrRowIdx]) + BOX_SIZE + 18;
+        const streetBase = (!isHorizontal ? colCoords[streetCol] : rowCoords[streetCol]) + BOX_SIZE + 16;
 
-        const y1 = aveBaseY + depTrack * depPitch;
-        const tAveBaseY = (!isHorizontal ? m.tPos.y : m.tPos.x) - (ROW_PITCH - BOX_SIZE) + 18;
-        const y2 = tAveBaseY + arrTrack * arrPitch;
-        const xs = computedStreetCoords.get(e.id) || 0;
+        const y1 = sAveBase + depTrack * MIN_CABLE_PITCH;
+        const y2 = tAveBase + arrTrack * MIN_CABLE_PITCH;
+        const xs = streetBase + streetTrack * MIN_CABLE_PITCH;
 
         geom = buildStreetAvenueGeometry(sx, sy, tx, ty, isHorizontal, false, y1, y2, xs);
       }
