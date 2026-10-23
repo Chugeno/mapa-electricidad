@@ -93,7 +93,8 @@ const ICON_SVG_PATHS: Record<IconKind, string> = {
   et132:
     'M6 6h12v12H6z M9 9h6v6H9z M9 2v4 M15 2v4 M9 18v4 M15 18v4 M2 9h4 M2 15h4 M18 9h4 M18 15h4',
   dist: 'M6 22V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18Z M6 12H4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2 M18 9h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-2 M10 6h4 M10 10h4 M10 14h4 M10 18h4',
-  coop: 'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2 M9 7a4 4 0 1 0 0-8 4 4 0 0 0 0 8z M22 21v-2a4 4 0 0 0-3-3.87 M16 3.13a4 4 0 0 1 0 7.75'
+  coop:
+    'M 7.5 3 L 10.5 7.5 H 8.8 L 11.8 12 H 9.8 L 13 17 H 8.5 V 21 H 6.5 V 17 H 2 L 5.2 12 H 3.2 L 6.2 7.5 H 4.5 Z M 16.5 3 L 19.5 7.5 H 17.8 L 20.8 12 H 18.8 L 22 17 H 17.5 V 21 H 15.5 V 17 H 11 L 14.2 12 H 12.2 L 15.2 7.5 H 13.5 Z'
 };
 
 let cachedIconPath2D: Record<IconKind, Path2D> | null = null;
