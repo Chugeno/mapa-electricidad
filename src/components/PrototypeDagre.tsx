@@ -1185,6 +1185,40 @@ function computeLayoutAndBatchedCables(
 // ============================================================================
 const EMPTY_EDGES: never[] = [];
 
+function cableCrossesViewport(
+  cg: ComputedCableGeometry,
+  viewMinX: number,
+  viewMaxX: number,
+  viewMinY: number,
+  viewMaxY: number
+): boolean {
+  if (
+    cg.maxX < viewMinX ||
+    cg.minX > viewMaxX ||
+    cg.maxY < viewMinY ||
+    cg.minY > viewMaxY ||
+    !cg.path2D
+  ) {
+    return false;
+  }
+  if (cg.maxX - cg.minX < 450 && cg.maxY - cg.minY < 450) {
+    return true;
+  }
+  const pts = cg.pts;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p1 = pts[i];
+    const p2 = pts[i + 1];
+    const sMinX = p1[0] < p2[0] ? p1[0] : p2[0];
+    const sMaxX = p1[0] > p2[0] ? p1[0] : p2[0];
+    const sMinY = p1[1] < p2[1] ? p1[1] : p2[1];
+    const sMaxY = p1[1] > p2[1] ? p1[1] : p2[1];
+    if (sMaxX >= viewMinX && sMinX <= viewMaxX && sMaxY >= viewMinY && sMinY <= viewMaxY) {
+      return true;
+    }
+  }
+  return false;
+}
+
 const FlowSceneInner: React.FC<{
   layoutMode: 'DAGRE_LR' | 'DAGRE_TB' | 'MAP';
   topology: TopologyData | null;
@@ -1389,21 +1423,43 @@ const FlowSceneInner: React.FC<{
       }
     }
 
-    // 2. CABLES (En zoom cercano usa cableGeometries con viewport culling; en zoom lejano usa Path2D batcheados)
+    // 2. CABLES (En zoom cercano anima con viewport culling; base batcheada en GPU)
     if (vp.zoom >= 0.25) {
-      // 1. Cables atenuados (fondo estático sin animación)
-      if (dimmedCables.length > 0) {
+      const hasFilter = Boolean(filterKv !== null || filterRole || filterRegion || filterTech || searchQuery);
+
+      if (!hasFilter) {
+        // 1. Sin filtro: trazado base continuo de cables batcheado en GPU (5 llamadas ultra rápidas)
         ctx.setLineDash([]);
-        ctx.globalAlpha = 0.12;
-        for (let i = 0; i < dimmedCables.length; i++) {
-          const cg = dimmedCables[i];
-          if (
-            cg.maxX < viewMinX ||
-            cg.minX > viewMaxX ||
-            cg.maxY < viewMinY ||
-            cg.minY > viewMaxY ||
-            !cg.path2D
-          ) {
+        ctx.globalAlpha = 0.38;
+        for (let i = 0; i < compiledPaths.base2D.length; i++) {
+          const b = compiledPaths.base2D[i];
+          ctx.strokeStyle = b.cfg.color;
+          ctx.lineWidth = b.cfg.width * (isMap ? 1.2 : 1.0);
+          ctx.stroke(b.path);
+        }
+      } else {
+        // 1. Con filtro activo: cables fuera del filtro van atenuados al fondo
+        if (dimmedCables.length > 0) {
+          ctx.setLineDash([]);
+          ctx.globalAlpha = 0.12;
+          for (let i = 0; i < dimmedCables.length; i++) {
+            const cg = dimmedCables[i];
+            if (!cableCrossesViewport(cg, viewMinX, viewMaxX, viewMinY, viewMaxY)) {
+              continue;
+            }
+            const cfg = VOLTAGE_CONFIG[cg.kvKey] || VOLTAGE_CONFIG[132];
+            ctx.strokeStyle = cfg.color;
+            ctx.lineWidth = cfg.width * (isMap ? 1.2 : 1.0);
+            ctx.stroke(cg.path2D);
+          }
+        }
+
+        // Trazado base nítido solo para los cables activos que cumplen el filtro
+        ctx.setLineDash([]);
+        ctx.globalAlpha = 0.38;
+        for (let i = 0; i < activeCables.length; i++) {
+          const cg = activeCables[i];
+          if (!cableCrossesViewport(cg, viewMinX, viewMaxX, viewMinY, viewMaxY)) {
             continue;
           }
           const cfg = VOLTAGE_CONFIG[cg.kvKey] || VOLTAGE_CONFIG[132];
@@ -1413,26 +1469,18 @@ const FlowSceneInner: React.FC<{
         }
       }
 
-      // 2. Cables activos resaltados (trazo base + flujo animado)
+      // 2. Flujo dinámico animado (solo cables activos que entran en la pantalla)
       for (let i = 0; i < activeCables.length; i++) {
         const cg = activeCables[i];
-        if (
-          cg.maxX < viewMinX ||
-          cg.minX > viewMaxX ||
-          cg.maxY < viewMinY ||
-          cg.minY > viewMaxY ||
-          !cg.path2D
-        ) {
+        if (!cableCrossesViewport(cg, viewMinX, viewMaxX, viewMinY, viewMaxY)) {
           continue;
         }
+
+        const shouldAnimate = hasFilter || cg.kvKey >= 220 || vp.zoom >= 0.65;
+        if (!shouldAnimate) continue;
+
         const cfg = VOLTAGE_CONFIG[cg.kvKey] || VOLTAGE_CONFIG[132];
         const cableWidth = cfg.width * (isMap ? 1.2 : 1.0);
-
-        ctx.setLineDash([]);
-        ctx.globalAlpha = 0.38;
-        ctx.strokeStyle = cfg.color;
-        ctx.lineWidth = cableWidth;
-        ctx.stroke(cg.path2D);
 
         const dashLen = Math.max(8, Math.round(cableWidth * 2.8));
         const gapLen = Math.max(6, Math.round(cableWidth * 2.0));
@@ -1712,9 +1760,9 @@ const FlowSceneInner: React.FC<{
 
     const tick = (now: number) => {
       const dt = (now - lastTs) / 1000;
-      if (!isPanningRef.current && dt >= 0.032) {
+      lastTs = now;
+      if (!isPanningRef.current) {
         dashPhaseRef.current += dt;
-        lastTs = now;
         renderCanvasFrame();
       }
       animId = requestAnimationFrame(tick);
