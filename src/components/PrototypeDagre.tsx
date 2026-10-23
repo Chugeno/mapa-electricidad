@@ -655,7 +655,7 @@ function buildMasterDataset(topology: TopologyData | null): {
 function computeLayoutAndBatchedCables(
   masterNodes: GridNodeData[],
   masterEdges: GridEdgeData[],
-  mode: 'DAGRE_LR' | 'DAGRE_TB' | 'MAP',
+  mode: 'DAGRE_LR' | 'DAGRE_TB' | 'BUSES' | 'MAP',
   filterKv: number | null,
   filterRole: string | null,
   filterRegion: string | null,
@@ -664,6 +664,7 @@ function computeLayoutAndBatchedCables(
   telemetry: TelemetryData | null
 ) {
   const isMap = mode === 'MAP';
+  const isBuses = mode === 'BUSES';
   const isHorizontal = mode === 'DAGRE_LR';
   const q = searchQuery.trim().toLowerCase();
 
@@ -735,24 +736,37 @@ function computeLayoutAndBatchedCables(
   // POSICIONES PERMANENTES: En modo Plano Unifilar la cuadrícula nacional es FIJA y sagrada.
   // Ninguna estación ni cable se mueve de casillero al filtrar; solo se atenúan los elementos secundarios.
   const positions = new Map<string, { x: number; y: number }>();
+  const busPlaques: { y: number; title: string; subtitle: string; kv: number; color: string }[] = [];
 
-  // Regla estricta de separación: paso mínimo de 9.0px entre líneas paralelas
-  // Garantiza entre 4.4px y 7.5px de espacio libre visible entre bordes de cables de cualquier nivel de tensión.
-  const MIN_CABLE_PITCH = 9.0;
-  const BASE_AVE_HEIGHT = 180;
-  const BASE_STREET_WIDTH = 156;
+  const cableGeometries: ComputedCableGeometry[] = [];
+  const baseDimmedByKv: Record<number, string[]> = { 500: [], 220: [], 132: [], 33: [], 13.2: [] };
+  const baseActiveByKv: Record<number, string[]> = { 500: [], 220: [], 132: [], 33: [], 13.2: [] };
+  const animActiveByKvSpeed: Record<string, { kv: number; speed: 'fast' | 'med' | 'slow'; paths: string[] }> = {};
 
-  interface LogicalNodeGrid {
-    row: number;
-    col: number;
-    role: NodeRole;
-  }
-  const logicalGrid = new Map<string, LogicalNodeGrid>();
-  let totalGridRows = 0;
-  const maxCols = 32;
-
-  if (!isMap) {
+  if (isBuses) {
+    // ========================================================================
+    // MODO PLANO COMPACTO POR BUSES (BARRAS COLECTORAS)
+    // Agrupa generadoras, transformadoras, transporte y cooperativas en pisos
+    // con barras colectoras troncales donde confluyen todas las conexiones.
+    // ========================================================================
     const tiers: NodeRole[] = ['GEN', 'ET500', 'ET132', 'DIST', 'COOP'];
+    const maxCols = 34;
+    const COL_GAP = 26;
+    const COL_PITCH = BOX_SIZE + COL_GAP; // 150px
+    const ROW_GAP = 48;
+    const ROW_PITCH = BOX_SIZE + ROW_GAP; // 172px
+    const INTER_TIER_GAP = 220;
+
+    let currentY = 40;
+    const tierBoundaries: { role: NodeRole; startY: number; endY: number; numSubRows: number }[] = [];
+    const subrowBuses: {
+      tier: NodeRole;
+      subrow: number;
+      minX: number;
+      maxX: number;
+      outBusY: number;
+      inBusY: number;
+    }[] = [];
 
     tiers.forEach((tierRole) => {
       const tierNodes = masterNodes
@@ -761,309 +775,795 @@ function computeLayoutAndBatchedCables(
           const ra = REGION_ORDER[a.region] ?? 4;
           const rb = REGION_ORDER[b.region] ?? 4;
           if (ra !== rb) return ra - rb;
-          return a.mapX - b.mapX;
+          return a.voltageKv - b.voltageKv;
         });
 
       if (tierNodes.length === 0) return;
 
-      const colsInTier = Math.min(maxCols, tierNodes.length);
-      const numSubRows = Math.ceil(tierNodes.length / colsInTier);
+      const numSubRows = Math.ceil(tierNodes.length / maxCols);
+      const startY = currentY;
 
-      tierNodes.forEach((node, idx) => {
-        const subRow = Math.floor(idx / colsInTier);
-        const colInRow = idx % colsInTier;
-        const itemsInThisSubRow =
-          subRow === numSubRows - 1 ? tierNodes.length - subRow * colsInTier : colsInTier;
+      for (let sr = 0; sr < numSubRows; sr++) {
+        const startIdx = sr * maxCols;
+        const endIdx = Math.min(tierNodes.length, (sr + 1) * maxCols);
+        const countInRow = endIdx - startIdx;
+        const rowWidth = countInRow * COL_PITCH - COL_GAP;
+        const offsetLeft = Math.floor((maxCols * COL_PITCH - rowWidth) / 2);
+        const rowY = currentY;
 
-        const offsetCols = Math.floor((maxCols - itemsInThisSubRow) / 2);
-        const finalCol = colInRow + offsetCols;
-        const finalRow = totalGridRows + subRow;
+        let minX = Infinity,
+          maxX = -Infinity;
+        for (let i = startIdx; i < endIdx; i++) {
+          const colInRow = i - startIdx;
+          const nodeX = offsetLeft + colInRow * COL_PITCH;
+          if (nodeX < minX) minX = nodeX;
+          if (nodeX + BOX_SIZE > maxX) maxX = nodeX + BOX_SIZE;
+          positions.set(tierNodes[i].uid, { x: nodeX, y: rowY });
+        }
 
-        logicalGrid.set(node.uid, { row: finalRow, col: finalCol, role: tierRole });
+        subrowBuses.push({
+          tier: tierRole,
+          subrow: sr,
+          minX: minX - 16,
+          maxX: maxX + 16,
+          outBusY: rowY + BOX_SIZE + 24,
+          inBusY: rowY - 24
+        });
+
+        currentY += ROW_PITCH;
+      }
+
+      const endY = currentY - ROW_GAP;
+      tierBoundaries.push({ role: tierRole, startY, endY, numSubRows });
+      currentY += INTER_TIER_GAP;
+    });
+
+    const diagramW = maxCols * COL_PITCH;
+
+    // Placas de barras troncales en los espacios entre pisos
+    for (let t = 0; t < tierBoundaries.length - 1; t++) {
+      const tUpper = tierBoundaries[t];
+      const tLower = tierBoundaries[t + 1];
+      const midY = Math.round((tUpper.endY + tLower.startY) / 2);
+      let title = '',
+        sub = '',
+        kv = 132;
+      if (t === 0) {
+        title = '⚡ BARRA COLECTORA DE GENERACIÓN (MT / AT)';
+        sub = 'Recepción e inyección de 474 centrales generadoras del SADI';
+        kv = 132;
+      } else if (t === 1) {
+        title = '⚡ BARRA TRONCAL NACIONAL 500 kV (EXTRA ALTA TENSIÓN)';
+        sub = 'Interconexión Nacional Transener · 59 Estaciones 500 kV';
+        kv = 500;
+      } else if (t === 2) {
+        title = '⚡ BARRA DE SUBTRANSMISIÓN PROVINCIAL 132 kV / 220 kV';
+        sub = 'Distribución en Alta Tensión Regional · 264 Subestaciones';
+        kv = 132;
+      } else if (t === 3) {
+        title = '⚡ BARRA DE DISTRIBUCIÓN URBANA Y RURAL 13,2 kV / 33 kV';
+        sub = 'Alimentación a Distribuidoras Provinciales y 580 Cooperativas Eléctricas';
+        kv = 13.2;
+      }
+      const cfg = VOLTAGE_CONFIG[kv] || VOLTAGE_CONFIG[132];
+      busPlaques.push({ y: midY, title, subtitle: sub, kv, color: cfg.color });
+    }
+
+    // 1. Feeders desde y hacia cada estación
+    masterNodes.forEach((n) => {
+      const pos = positions.get(n.uid);
+      if (!pos) return;
+      const kv = normalizeKvKey(n.voltageKv);
+      const isDimmed = !illuminatedNodeUids.has(n.uid);
+      const factor = getRegionFactor(n.region);
+      const liveAmps = Math.round(n.amperes * factor);
+      const speed = getSpeedBucket(liveAmps);
+
+      const pinX = pos.x + HALF_BOX;
+
+      // Alimentación de salida (generadoras y transformadoras)
+      if (n.role !== 'COOP') {
+        const outY = pos.y + BOX_SIZE;
+        const targetBusY = outY + 24;
+        const geomD = `M ${pinX.toFixed(1)},${outY.toFixed(1)} L ${pinX.toFixed(1)},${targetBusY.toFixed(1)}`;
+        const pts: [number, number][] = [
+          [pinX, outY],
+          [pinX, targetBusY]
+        ];
+        const edgeData: GridEdgeData = {
+          id: `FEEDER_OUT_${n.uid}`,
+          source: n.uid,
+          target: `BUS_${n.role}`,
+          kv,
+          amperes: liveAmps,
+          mw: n.powerMw,
+          parallelCount: 1,
+          fromName: n.label,
+          toName: `Barra Colectora ${n.kvText}`,
+          empresa: n.operator,
+          region: n.region,
+          curvature: 0,
+          laneHash: 1,
+          isDimmed
+        };
+        cableGeometries.push({
+          edge: edgeData,
+          kvKey: kv,
+          speedBucket: speed,
+          d: geomD,
+          pts,
+          minX: pinX - 10,
+          minY: outY - 5,
+          maxX: pinX + 10,
+          maxY: targetBusY + 5,
+          path2D: typeof Path2D !== 'undefined' ? new Path2D(geomD) : undefined
+        });
+
+        if (isDimmed) {
+          if (!baseDimmedByKv[kv]) baseDimmedByKv[kv] = [];
+          baseDimmedByKv[kv].push(geomD);
+        } else {
+          if (!baseActiveByKv[kv]) baseActiveByKv[kv] = [];
+          baseActiveByKv[kv].push(geomD);
+          const bKey = `${kv}_${speed}`;
+          if (!animActiveByKvSpeed[bKey]) animActiveByKvSpeed[bKey] = { kv, speed, paths: [] };
+          animActiveByKvSpeed[bKey].paths.push(geomD);
+        }
+      }
+
+      // Alimentación de entrada (estaciones transformadoras, distribuidoras y cooperativas)
+      if (n.role !== 'GEN') {
+        const inY = pos.y;
+        const sourceBusY = inY - 24;
+        const geomD = `M ${pinX.toFixed(1)},${sourceBusY.toFixed(1)} L ${pinX.toFixed(1)},${inY.toFixed(1)}`;
+        const pts: [number, number][] = [
+          [pinX, sourceBusY],
+          [pinX, inY]
+        ];
+        const edgeData: GridEdgeData = {
+          id: `FEEDER_IN_${n.uid}`,
+          source: `BUS_${n.role}_IN`,
+          target: n.uid,
+          kv,
+          amperes: liveAmps,
+          mw: n.powerMw,
+          parallelCount: 1,
+          fromName: `Barra Colectora ${n.kvText}`,
+          toName: n.label,
+          empresa: n.operator,
+          region: n.region,
+          curvature: 0,
+          laneHash: 2,
+          isDimmed
+        };
+        cableGeometries.push({
+          edge: edgeData,
+          kvKey: kv,
+          speedBucket: speed,
+          d: geomD,
+          pts,
+          minX: pinX - 10,
+          minY: sourceBusY - 5,
+          maxX: pinX + 10,
+          maxY: inY + 5,
+          path2D: typeof Path2D !== 'undefined' ? new Path2D(geomD) : undefined
+        });
+
+        if (isDimmed) {
+          if (!baseDimmedByKv[kv]) baseDimmedByKv[kv] = [];
+          baseDimmedByKv[kv].push(geomD);
+        } else {
+          if (!baseActiveByKv[kv]) baseActiveByKv[kv] = [];
+          baseActiveByKv[kv].push(geomD);
+          const bKey = `${kv}_${speed}`;
+          if (!animActiveByKvSpeed[bKey]) animActiveByKvSpeed[bKey] = { kv, speed, paths: [] };
+          animActiveByKvSpeed[bKey].paths.push(geomD);
+        }
+      }
+    });
+
+    // 2. Trazado de las sub-barras colectoras de cada fila (horizontal buses)
+    subrowBuses.forEach((sb) => {
+      const kv =
+        sb.tier === 'ET500'
+          ? 500
+          : sb.tier === 'ET132'
+          ? 132
+          : sb.tier === 'DIST' || sb.tier === 'COOP'
+          ? 13.2
+          : 132;
+      const isDimmed = filterKv !== null && filterKv !== kv;
+      const speed = 'med';
+
+      // Barra colectora de salida de la fila (si emite energía hacia abajo)
+      if (sb.tier !== 'COOP') {
+        const dOut = `M ${sb.minX.toFixed(1)},${sb.outBusY.toFixed(1)} L ${sb.maxX.toFixed(1)},${sb.outBusY.toFixed(1)}`;
+        const edgeOut: GridEdgeData = {
+          id: `SUB_BUS_OUT_${sb.tier}_${sb.subrow}`,
+          source: `BUS_${sb.tier}`,
+          target: `BUS_${sb.tier}`,
+          kv,
+          amperes: 600,
+          mw: 'Barra Colectora',
+          parallelCount: 1,
+          fromName: `Sub-barra ${sb.tier}`,
+          toName: `Sub-barra ${sb.tier}`,
+          empresa: 'SADI',
+          region: 'Nacional',
+          curvature: 0,
+          laneHash: 3,
+          isDimmed
+        };
+        cableGeometries.push({
+          edge: edgeOut,
+          kvKey: kv,
+          speedBucket: speed,
+          d: dOut,
+          pts: [
+            [sb.minX, sb.outBusY],
+            [sb.maxX, sb.outBusY]
+          ],
+          minX: sb.minX,
+          minY: sb.outBusY - 5,
+          maxX: sb.maxX,
+          maxY: sb.outBusY + 5,
+          path2D: typeof Path2D !== 'undefined' ? new Path2D(dOut) : undefined
+        });
+
+        if (isDimmed) {
+          if (!baseDimmedByKv[kv]) baseDimmedByKv[kv] = [];
+          baseDimmedByKv[kv].push(dOut);
+        } else {
+          if (!baseActiveByKv[kv]) baseActiveByKv[kv] = [];
+          baseActiveByKv[kv].push(dOut);
+          const bKey = `${kv}_${speed}`;
+          if (!animActiveByKvSpeed[bKey]) animActiveByKvSpeed[bKey] = { kv, speed, paths: [] };
+          animActiveByKvSpeed[bKey].paths.push(dOut);
+        }
+      }
+
+      // Barra colectora de entrada de la fila (si recibe energía desde arriba)
+      if (sb.tier !== 'GEN') {
+        const dIn = `M ${sb.minX.toFixed(1)},${sb.inBusY.toFixed(1)} L ${sb.maxX.toFixed(1)},${sb.inBusY.toFixed(1)}`;
+        const edgeIn: GridEdgeData = {
+          id: `SUB_BUS_IN_${sb.tier}_${sb.subrow}`,
+          source: `BUS_${sb.tier}_IN`,
+          target: `BUS_${sb.tier}_IN`,
+          kv,
+          amperes: 600,
+          mw: 'Barra Colectora',
+          parallelCount: 1,
+          fromName: `Sub-barra ${sb.tier}`,
+          toName: `Sub-barra ${sb.tier}`,
+          empresa: 'SADI',
+          region: 'Nacional',
+          curvature: 0,
+          laneHash: 3,
+          isDimmed
+        };
+        cableGeometries.push({
+          edge: edgeIn,
+          kvKey: kv,
+          speedBucket: speed,
+          d: dIn,
+          pts: [
+            [sb.minX, sb.inBusY],
+            [sb.maxX, sb.inBusY]
+          ],
+          minX: sb.minX,
+          minY: sb.inBusY - 5,
+          maxX: sb.maxX,
+          maxY: sb.inBusY + 5,
+          path2D: typeof Path2D !== 'undefined' ? new Path2D(dIn) : undefined
+        });
+
+        if (isDimmed) {
+          if (!baseDimmedByKv[kv]) baseDimmedByKv[kv] = [];
+          baseDimmedByKv[kv].push(dIn);
+        } else {
+          if (!baseActiveByKv[kv]) baseActiveByKv[kv] = [];
+          baseActiveByKv[kv].push(dIn);
+          const bKey = `${kv}_${speed}`;
+          if (!animActiveByKvSpeed[bKey]) animActiveByKvSpeed[bKey] = { kv, speed, paths: [] };
+          animActiveByKvSpeed[bKey].paths.push(dIn);
+        }
+      }
+    });
+
+    // 2b. Troncales verticales colectoras (Risers de interconexión)
+    const riserXs = [
+      48,
+      Math.round(diagramW * 0.28),
+      Math.round(diagramW * 0.50),
+      Math.round(diagramW * 0.72),
+      diagramW - 48
+    ];
+    tierBoundaries.forEach((tb, tIdx) => {
+      const kv =
+        tb.role === 'ET500'
+          ? 500
+          : tb.role === 'ET132'
+          ? 132
+          : tb.role === 'DIST' || tb.role === 'COOP'
+          ? 13.2
+          : 132;
+      const isDimmed = filterKv !== null && filterKv !== kv;
+      const speed = 'fast';
+
+      // Risers que llevan energía hacia la barra troncal inferior
+      if (tIdx < busPlaques.length) {
+        const nextTrunkY = busPlaques[tIdx].y;
+        riserXs.forEach((rx, rIdx) => {
+          const dRiser = `M ${rx},${tb.startY} L ${rx},${nextTrunkY}`;
+          const edgeRiser: GridEdgeData = {
+            id: `RISER_DOWN_${tb.role}_${rIdx}`,
+            source: `RISER_${tb.role}`,
+            target: `TRUNK_${tIdx}`,
+            kv,
+            amperes: 800,
+            mw: 'Troncal Vertical',
+            parallelCount: 1,
+            fromName: `Bajada Troncal ${tb.role}`,
+            toName: busPlaques[tIdx].title,
+            empresa: 'SADI',
+            region: 'Nacional',
+            curvature: 0,
+            laneHash: 5,
+            isDimmed
+          };
+          cableGeometries.push({
+            edge: edgeRiser,
+            kvKey: kv,
+            speedBucket: speed,
+            d: dRiser,
+            pts: [
+              [rx, tb.startY],
+              [rx, nextTrunkY]
+            ],
+            minX: rx - 5,
+            minY: tb.startY,
+            maxX: rx + 5,
+            maxY: nextTrunkY,
+            path2D: typeof Path2D !== 'undefined' ? new Path2D(dRiser) : undefined
+          });
+
+          if (isDimmed) {
+            if (!baseDimmedByKv[kv]) baseDimmedByKv[kv] = [];
+            baseDimmedByKv[kv].push(dRiser);
+          } else {
+            if (!baseActiveByKv[kv]) baseActiveByKv[kv] = [];
+            baseActiveByKv[kv].push(dRiser);
+            const bKey = `${kv}_${speed}`;
+            if (!animActiveByKvSpeed[bKey]) animActiveByKvSpeed[bKey] = { kv, speed, paths: [] };
+            animActiveByKvSpeed[bKey].paths.push(dRiser);
+          }
+        });
+      }
+
+      // Risers que traen energía desde la barra troncal superior hacia este piso
+      if (tIdx > 0 && tIdx - 1 < busPlaques.length) {
+        const prevTrunkY = busPlaques[tIdx - 1].y;
+        riserXs.forEach((rx, rIdx) => {
+          const dRiser = `M ${rx},${prevTrunkY} L ${rx},${tb.endY}`;
+          const edgeRiser: GridEdgeData = {
+            id: `RISER_FEED_${tb.role}_${rIdx}`,
+            source: `TRUNK_${tIdx - 1}`,
+            target: `RISER_${tb.role}`,
+            kv,
+            amperes: 800,
+            mw: 'Troncal Vertical',
+            parallelCount: 1,
+            fromName: busPlaques[tIdx - 1].title,
+            toName: `Alimentación ${tb.role}`,
+            empresa: 'SADI',
+            region: 'Nacional',
+            curvature: 0,
+            laneHash: 5,
+            isDimmed
+          };
+          cableGeometries.push({
+            edge: edgeRiser,
+            kvKey: kv,
+            speedBucket: speed,
+            d: dRiser,
+            pts: [
+              [rx, prevTrunkY],
+              [rx, tb.endY]
+            ],
+            minX: rx - 5,
+            minY: prevTrunkY,
+            maxX: rx + 5,
+            maxY: tb.endY,
+            path2D: typeof Path2D !== 'undefined' ? new Path2D(dRiser) : undefined
+          });
+
+          if (isDimmed) {
+            if (!baseDimmedByKv[kv]) baseDimmedByKv[kv] = [];
+            baseDimmedByKv[kv].push(dRiser);
+          } else {
+            if (!baseActiveByKv[kv]) baseActiveByKv[kv] = [];
+            baseActiveByKv[kv].push(dRiser);
+            const bKey = `${kv}_${speed}`;
+            if (!animActiveByKvSpeed[bKey]) animActiveByKvSpeed[bKey] = { kv, speed, paths: [] };
+            animActiveByKvSpeed[bKey].paths.push(dRiser);
+          }
+        });
+      }
+    });
+
+    // 3. Trazado de las GRANDES BARRAS TRONCALES (Trunk Busbars)
+    busPlaques.forEach((bp, bIdx) => {
+      const isDimmed = filterKv !== null && filterKv !== bp.kv;
+      const speed = 'fast';
+      const dTrunk = `M 40,${bp.y.toFixed(1)} L ${(diagramW - 40).toFixed(1)},${bp.y.toFixed(1)}`;
+      const edgeTrunk: GridEdgeData = {
+        id: `TRUNK_BUS_${bIdx}`,
+        source: `TRUNK_${bp.kv}`,
+        target: `TRUNK_${bp.kv}`,
+        kv: bp.kv,
+        amperes: 1200,
+        mw: bp.title,
+        parallelCount: 1,
+        fromName: bp.title,
+        toName: bp.title,
+        empresa: 'CAMMESA',
+        region: 'SADI',
+        curvature: 0,
+        laneHash: 4,
+        isDimmed
+      };
+      cableGeometries.push({
+        edge: edgeTrunk,
+        kvKey: bp.kv,
+        speedBucket: speed,
+        d: dTrunk,
+        pts: [
+          [40, bp.y],
+          [diagramW - 40, bp.y]
+        ],
+        minX: 40,
+        minY: bp.y - 10,
+        maxX: diagramW - 40,
+        maxY: bp.y + 10,
+        path2D: typeof Path2D !== 'undefined' ? new Path2D(dTrunk) : undefined
       });
 
-      totalGridRows += numSubRows;
+      if (isDimmed) {
+        if (!baseDimmedByKv[bp.kv]) baseDimmedByKv[bp.kv] = [];
+        baseDimmedByKv[bp.kv].push(dTrunk);
+      } else {
+        if (!baseActiveByKv[bp.kv]) baseActiveByKv[bp.kv] = [];
+        baseActiveByKv[bp.kv].push(dTrunk);
+        const bKey = `${bp.kv}_${speed}`;
+        if (!animActiveByKvSpeed[bKey]) animActiveByKvSpeed[bKey] = { kv: bp.kv, speed, paths: [] };
+        animActiveByKvSpeed[bKey].paths.push(dTrunk);
+      }
     });
   } else {
-    masterNodes.forEach((n) => {
-      positions.set(n.uid, { x: n.mapX - 18, y: n.mapY - 18 });
-    });
-  }
+    // ========================================================================
+    // MODOS PLANO UNIFILAR VERTICAL / HORIZONTAL (RUTEO DETALLADO POR CANALES)
+    // O MODO MAPA GEOGRÁFICO
+    // ========================================================================
+    const MIN_CABLE_PITCH = 9.0;
+    const BASE_AVE_HEIGHT = 180;
+    const BASE_STREET_WIDTH = 156;
 
-  // Pre-cálculo de terminales y ruteo determinista libre de colisiones
-  interface EdgeRoutingMeta {
-    edge: GridEdgeData;
-    sGrid: LogicalNodeGrid;
-    tGrid: LogicalNodeGrid;
-    isAdjacent: boolean;
-    streetCol: number;
-  }
-  const edgeRoutingMetaList: EdgeRoutingMeta[] = [];
+    interface LogicalNodeGrid {
+      row: number;
+      col: number;
+      role: NodeRole;
+    }
+    const logicalGrid = new Map<string, LogicalNodeGrid>();
+    let totalGridRows = 0;
+    const maxCols = 32;
 
-  const outBySource = new Map<string, GridEdgeData[]>();
-  const inByTarget = new Map<string, GridEdgeData[]>();
+    if (!isMap) {
+      const tiers: NodeRole[] = ['GEN', 'ET500', 'ET132', 'DIST', 'COOP'];
 
-  masterEdges.forEach((e) => {
-    const s = String(e.source);
-    const t = String(e.target);
-    if (!outBySource.has(s)) outBySource.set(s, []);
-    outBySource.get(s)!.push(e);
-    if (!inByTarget.has(t)) inByTarget.set(t, []);
-    inByTarget.get(t)!.push(e);
-  });
+      tiers.forEach((tierRole) => {
+        const tierNodes = masterNodes
+          .filter((n) => n.role === tierRole)
+          .sort((a, b) => {
+            const ra = REGION_ORDER[a.region] ?? 4;
+            const rb = REGION_ORDER[b.region] ?? 4;
+            if (ra !== rb) return ra - rb;
+            return a.mapX - b.mapX;
+          });
 
-  if (!isMap) {
-    for (const list of outBySource.values()) {
-      list.sort((a, b) => {
-        const ga = logicalGrid.get(String(a.target));
-        const gb = logicalGrid.get(String(b.target));
-        if (!ga || !gb) return 0;
-        return isHorizontal ? ga.row - gb.row : ga.col - gb.col;
+        if (tierNodes.length === 0) return;
+
+        const colsInTier = Math.min(maxCols, tierNodes.length);
+        const numSubRows = Math.ceil(tierNodes.length / colsInTier);
+
+        tierNodes.forEach((node, idx) => {
+          const subRow = Math.floor(idx / colsInTier);
+          const colInRow = idx % colsInTier;
+          const itemsInThisSubRow =
+            subRow === numSubRows - 1 ? tierNodes.length - subRow * colsInTier : colsInTier;
+
+          const offsetCols = Math.floor((maxCols - itemsInThisSubRow) / 2);
+          const finalCol = colInRow + offsetCols;
+          const finalRow = totalGridRows + subRow;
+
+          logicalGrid.set(node.uid, { row: finalRow, col: finalCol, role: tierRole });
+        });
+
+        totalGridRows += numSubRows;
+      });
+    } else {
+      masterNodes.forEach((n) => {
+        positions.set(n.uid, { x: n.mapX - 18, y: n.mapY - 18 });
       });
     }
-    for (const list of inByTarget.values()) {
-      list.sort((a, b) => {
-        const ga = logicalGrid.get(String(a.source));
-        const gb = logicalGrid.get(String(b.source));
-        if (!ga || !gb) return 0;
-        return isHorizontal ? ga.row - gb.row : ga.col - gb.col;
+
+    // Pre-cálculo de terminales y ruteo determinista libre de colisiones
+    interface EdgeRoutingMeta {
+      edge: GridEdgeData;
+      sGrid: LogicalNodeGrid;
+      tGrid: LogicalNodeGrid;
+      isAdjacent: boolean;
+      streetCol: number;
+    }
+    const edgeRoutingMetaList: EdgeRoutingMeta[] = [];
+
+    const outBySource = new Map<string, GridEdgeData[]>();
+    const inByTarget = new Map<string, GridEdgeData[]>();
+
+    masterEdges.forEach((e) => {
+      const s = String(e.source);
+      const t = String(e.target);
+      if (!outBySource.has(s)) outBySource.set(s, []);
+      outBySource.get(s)!.push(e);
+      if (!inByTarget.has(t)) inByTarget.set(t, []);
+      inByTarget.get(t)!.push(e);
+    });
+
+    if (!isMap) {
+      for (const list of outBySource.values()) {
+        list.sort((a, b) => {
+          const ga = logicalGrid.get(String(a.target));
+          const gb = logicalGrid.get(String(b.target));
+          if (!ga || !gb) return 0;
+          return isHorizontal ? ga.row - gb.row : ga.col - gb.col;
+        });
+      }
+      for (const list of inByTarget.values()) {
+        list.sort((a, b) => {
+          const ga = logicalGrid.get(String(a.source));
+          const gb = logicalGrid.get(String(b.source));
+          if (!ga || !gb) return 0;
+          return isHorizontal ? ga.row - gb.row : ga.col - gb.col;
+        });
+      }
+
+      masterEdges.forEach((e) => {
+        const sGrid = logicalGrid.get(String(e.source));
+        const tGrid = logicalGrid.get(String(e.target));
+        if (!sGrid || !tGrid) return;
+
+        const isAdjacent = tGrid.row - sGrid.row === 1;
+        const streetCol = sGrid.col;
+
+        edgeRoutingMetaList.push({
+          edge: e,
+          sGrid,
+          tGrid,
+          isAdjacent,
+          streetCol
+        });
+      });
+    }
+
+    // 1. Asignación de canales verticales en calles entre columnas
+    const streetIntervals = new Map<number, { id: string; min: number; max: number }[]>();
+    edgeRoutingMetaList.forEach((m) => {
+      if (m.isAdjacent) return;
+      const colKey = m.streetCol;
+      if (!streetIntervals.has(colKey)) streetIntervals.set(colKey, []);
+      const minRow = Math.min(m.sGrid.row, m.tGrid.row);
+      const maxRow = Math.max(m.sGrid.row, m.tGrid.row);
+      streetIntervals.get(colKey)!.push({ id: m.edge.id, min: minRow, max: maxRow });
+    });
+
+    const streetAssignments = new Map<string, number>();
+    const streetTrackCounts = new Map<number, number>();
+    for (let c = 0; c < maxCols; c++) {
+      const intervals = streetIntervals.get(c) || [];
+      const { assignments, totalTracks } = assignTracks(intervals, 1);
+      assignments.forEach((track, id) => streetAssignments.set(id, track));
+      streetTrackCounts.set(c, totalTracks);
+    }
+
+    // 2. Asignación unificada de canales horizontales en avenidas entre filas
+    const aveIntervals = new Map<number, { id: string; min: number; max: number }[]>();
+    edgeRoutingMetaList.forEach((m) => {
+      if (m.isAdjacent) {
+        const r = m.sGrid.row;
+        if (!aveIntervals.has(r)) aveIntervals.set(r, []);
+        const minCol = Math.min(m.sGrid.col, m.tGrid.col);
+        const maxCol = Math.max(m.sGrid.col, m.tGrid.col);
+        aveIntervals.get(r)!.push({ id: `${m.edge.id}_adj`, min: minCol, max: maxCol });
+      } else {
+        const sR = m.sGrid.row;
+        const tR = Math.max(0, m.tGrid.row - 1);
+        if (!aveIntervals.has(sR)) aveIntervals.set(sR, []);
+        const minDepCol = Math.min(m.sGrid.col, m.streetCol);
+        const maxDepCol = Math.max(m.sGrid.col, m.streetCol);
+        aveIntervals.get(sR)!.push({ id: `${m.edge.id}_dep`, min: minDepCol, max: maxDepCol });
+
+        if (!aveIntervals.has(tR)) aveIntervals.set(tR, []);
+        const minArrCol = Math.min(m.streetCol, m.tGrid.col);
+        const maxArrCol = Math.max(m.streetCol, m.tGrid.col);
+        aveIntervals.get(tR)!.push({ id: `${m.edge.id}_arr`, min: minArrCol, max: maxArrCol });
+      }
+    });
+
+    const aveAssignments = new Map<string, number>();
+    const aveTrackCounts = new Map<number, number>();
+    for (let r = 0; r < totalGridRows; r++) {
+      const intervals = aveIntervals.get(r) || [];
+      const { assignments, totalTracks } = assignTracks(intervals, 1);
+      assignments.forEach((track, id) => aveAssignments.set(id, track));
+      aveTrackCounts.set(r, totalTracks);
+    }
+
+    // 3. Posicionamiento físico dinámico ("Separar SOLO si es necesario"):
+    const colCoords: number[] = [0];
+    for (let c = 0; c < maxCols; c++) {
+      const tracks = streetTrackCounts.get(c) || 0;
+      const neededW = Math.max(BASE_STREET_WIDTH, tracks * MIN_CABLE_PITCH + 32);
+      colCoords.push(colCoords[c] + BOX_SIZE + neededW);
+    }
+
+    const rowCoords: number[] = [0];
+    for (let r = 0; r < totalGridRows; r++) {
+      const tracks = aveTrackCounts.get(r) || 0;
+      const neededH = Math.max(BASE_AVE_HEIGHT, tracks * MIN_CABLE_PITCH + 36);
+      rowCoords.push(rowCoords[r] + BOX_SIZE + neededH);
+    }
+
+    if (!isMap) {
+      logicalGrid.forEach((grid, uid) => {
+        const cX = colCoords[grid.col];
+        const rY = rowCoords[grid.row];
+        if (!isHorizontal) {
+          positions.set(uid, { x: cX, y: rY });
+        } else {
+          positions.set(uid, { x: rY, y: cX });
+        }
       });
     }
 
     masterEdges.forEach((e) => {
-      const sGrid = logicalGrid.get(String(e.source));
-      const tGrid = logicalGrid.get(String(e.target));
-      if (!sGrid || !tGrid) return;
+      const sPos = positions.get(String(e.source));
+      const tPos = positions.get(String(e.target));
+      if (!sPos || !tPos) return;
 
-      const isAdjacent = tGrid.row - sGrid.row === 1;
-      const streetCol = sGrid.col;
+      let sx = 0,
+        sy = 0,
+        tx = 0,
+        ty = 0;
 
-      edgeRoutingMetaList.push({
-        edge: e,
-        sGrid,
-        tGrid,
-        isAdjacent,
-        streetCol
+      let geom: { d: string; pts: [number, number][] };
+
+      if (isMap) {
+        sx = sPos.x + 18;
+        sy = sPos.y + 18;
+        tx = tPos.x + 18;
+        ty = tPos.y + 18;
+        geom = buildCurvedMapGeometry(sx, sy, tx, ty, e.curvature ?? 0.14);
+      } else {
+        const sGrid = logicalGrid.get(String(e.source));
+        const tGrid = logicalGrid.get(String(e.target));
+        if (!sGrid || !tGrid) return;
+
+        const sList = outBySource.get(String(e.source)) || [e];
+        const tList = inByTarget.get(String(e.target)) || [e];
+        const sIdx = sList.indexOf(e);
+        const tIdx = tList.indexOf(e);
+
+        const sStep = Math.min(10, 88 / Math.max(1, sList.length));
+        const tStep = Math.min(10, 88 / Math.max(1, tList.length));
+        const sOff = (sIdx - (sList.length - 1) / 2) * sStep;
+        const tOff = (tIdx - (tList.length - 1) / 2) * tStep;
+
+        const sBoxX = !isHorizontal ? colCoords[sGrid.col] : rowCoords[sGrid.row];
+        const sBoxY = !isHorizontal ? rowCoords[sGrid.row] : colCoords[sGrid.col];
+        const tBoxX = !isHorizontal ? colCoords[tGrid.col] : rowCoords[tGrid.row];
+        const tBoxY = !isHorizontal ? rowCoords[tGrid.row] : colCoords[tGrid.col];
+
+        if (!isHorizontal) {
+          sx = sBoxX + HALF_BOX + sOff;
+          sy = sBoxY + BOX_SIZE;
+          tx = tBoxX + HALF_BOX + tOff;
+          ty = tBoxY;
+        } else {
+          sx = sBoxX + BOX_SIZE;
+          sy = sBoxY + HALF_BOX + sOff;
+          tx = tBoxX;
+          ty = tBoxY + HALF_BOX + tOff;
+        }
+
+        const isAdjacent = tGrid.row - sGrid.row === 1;
+
+        if (isAdjacent) {
+          const track = aveAssignments.get(`${e.id}_adj`) || 0;
+          const aveBase = (!isHorizontal ? rowCoords[sGrid.row] : colCoords[sGrid.col]) + BOX_SIZE + 18;
+          const bend = aveBase + track * MIN_CABLE_PITCH;
+          geom = buildStreetAvenueGeometry(sx, sy, tx, ty, isHorizontal, true, bend, 0, 0);
+        } else {
+          const depTrack = aveAssignments.get(`${e.id}_dep`) || 0;
+          const arrTrack = aveAssignments.get(`${e.id}_arr`) || 0;
+          const streetTrack = streetAssignments.get(e.id) || 0;
+
+          const streetCol = sGrid.col;
+          const sAveBase = (!isHorizontal ? rowCoords[sGrid.row] : colCoords[sGrid.col]) + BOX_SIZE + 18;
+          const arrRowIdx = Math.max(0, tGrid.row - 1);
+          const tAveBase = (!isHorizontal ? rowCoords[arrRowIdx] : colCoords[arrRowIdx]) + BOX_SIZE + 18;
+          const streetBase = (!isHorizontal ? colCoords[streetCol] : rowCoords[streetCol]) + BOX_SIZE + 16;
+
+          const y1 = sAveBase + depTrack * MIN_CABLE_PITCH;
+          const y2 = tAveBase + arrTrack * MIN_CABLE_PITCH;
+          const xs = streetBase + streetTrack * MIN_CABLE_PITCH;
+
+          geom = buildStreetAvenueGeometry(sx, sy, tx, ty, isHorizontal, false, y1, y2, xs);
+        }
+      }
+
+      const factor = getRegionFactor(e.region);
+      const liveAmperes = Math.round(e.amperes * factor);
+      const kvKey = normalizeKvKey(e.kv);
+      const speedBucket = getSpeedBucket(liveAmperes);
+
+      const edgeDimmed = !activeEdgeIds.has(e.id);
+
+      const enrichedEdge: GridEdgeData = {
+        ...e,
+        amperes: liveAmperes,
+        isDimmed: edgeDimmed
+      };
+
+      let minX = Infinity,
+        minY = Infinity,
+        maxX = -Infinity,
+        maxY = -Infinity;
+      for (let p = 0; p < geom.pts.length; p++) {
+        const px = geom.pts[p][0];
+        const py = geom.pts[p][1];
+        if (px < minX) minX = px;
+        if (py < minY) minY = py;
+        if (px > maxX) maxX = px;
+        if (py > maxY) maxY = py;
+      }
+
+      cableGeometries.push({
+        edge: enrichedEdge,
+        kvKey,
+        speedBucket,
+        d: geom.d,
+        pts: geom.pts,
+        minX: minX - 20,
+        minY: minY - 20,
+        maxX: maxX + 20,
+        maxY: maxY + 20,
+        path2D: typeof Path2D !== 'undefined' ? new Path2D(geom.d) : undefined
       });
-    });
-  }
 
-  // 1. Asignación de canales verticales en calles entre columnas
-  const streetIntervals = new Map<number, { id: string; min: number; max: number }[]>();
-  edgeRoutingMetaList.forEach((m) => {
-    if (m.isAdjacent) return;
-    const colKey = m.streetCol;
-    if (!streetIntervals.has(colKey)) streetIntervals.set(colKey, []);
-    const minRow = Math.min(m.sGrid.row, m.tGrid.row);
-    const maxRow = Math.max(m.sGrid.row, m.tGrid.row);
-    streetIntervals.get(colKey)!.push({ id: m.edge.id, min: minRow, max: maxRow });
-  });
-
-  const streetAssignments = new Map<string, number>();
-  const streetTrackCounts = new Map<number, number>();
-  for (let c = 0; c < maxCols; c++) {
-    const intervals = streetIntervals.get(c) || [];
-    const { assignments, totalTracks } = assignTracks(intervals, 1);
-    assignments.forEach((track, id) => streetAssignments.set(id, track));
-    streetTrackCounts.set(c, totalTracks);
-  }
-
-  // 2. Asignación unificada de canales horizontales en avenidas entre filas
-  const aveIntervals = new Map<number, { id: string; min: number; max: number }[]>();
-  edgeRoutingMetaList.forEach((m) => {
-    if (m.isAdjacent) {
-      const r = m.sGrid.row;
-      if (!aveIntervals.has(r)) aveIntervals.set(r, []);
-      const minCol = Math.min(m.sGrid.col, m.tGrid.col);
-      const maxCol = Math.max(m.sGrid.col, m.tGrid.col);
-      aveIntervals.get(r)!.push({ id: `${m.edge.id}_adj`, min: minCol, max: maxCol });
-    } else {
-      const sR = m.sGrid.row;
-      const tR = Math.max(0, m.tGrid.row - 1);
-      if (!aveIntervals.has(sR)) aveIntervals.set(sR, []);
-      const minDepCol = Math.min(m.sGrid.col, m.streetCol);
-      const maxDepCol = Math.max(m.sGrid.col, m.streetCol);
-      aveIntervals.get(sR)!.push({ id: `${m.edge.id}_dep`, min: minDepCol, max: maxDepCol });
-
-      if (!aveIntervals.has(tR)) aveIntervals.set(tR, []);
-      const minArrCol = Math.min(m.streetCol, m.tGrid.col);
-      const maxArrCol = Math.max(m.streetCol, m.tGrid.col);
-      aveIntervals.get(tR)!.push({ id: `${m.edge.id}_arr`, min: minArrCol, max: maxArrCol });
-    }
-  });
-
-  const aveAssignments = new Map<string, number>();
-  const aveTrackCounts = new Map<number, number>();
-  for (let r = 0; r < totalGridRows; r++) {
-    const intervals = aveIntervals.get(r) || [];
-    const { assignments, totalTracks } = assignTracks(intervals, 1);
-    assignments.forEach((track, id) => aveAssignments.set(id, track));
-    aveTrackCounts.set(r, totalTracks);
-  }
-
-  // 3. Posicionamiento físico dinámico ("Separar SOLO si es necesario"):
-  // Corredores con pocos cables mantienen la distancia compacta base.
-  // Corredores con alta densidad de vínculos se expanden lo necesario para garantizar MIN_CABLE_PITCH (9.0px).
-  const colCoords: number[] = [0];
-  for (let c = 0; c < maxCols; c++) {
-    const tracks = streetTrackCounts.get(c) || 0;
-    const neededW = Math.max(BASE_STREET_WIDTH, tracks * MIN_CABLE_PITCH + 32);
-    colCoords.push(colCoords[c] + BOX_SIZE + neededW);
-  }
-
-  const rowCoords: number[] = [0];
-  for (let r = 0; r < totalGridRows; r++) {
-    const tracks = aveTrackCounts.get(r) || 0;
-    const neededH = Math.max(BASE_AVE_HEIGHT, tracks * MIN_CABLE_PITCH + 36);
-    rowCoords.push(rowCoords[r] + BOX_SIZE + neededH);
-  }
-
-  if (!isMap) {
-    logicalGrid.forEach((grid, uid) => {
-      const cX = colCoords[grid.col];
-      const rY = rowCoords[grid.row];
-      if (!isHorizontal) {
-        positions.set(uid, { x: cX, y: rY });
+      if (edgeDimmed) {
+        if (!baseDimmedByKv[kvKey]) baseDimmedByKv[kvKey] = [];
+        baseDimmedByKv[kvKey].push(geom.d);
       } else {
-        positions.set(uid, { x: rY, y: cX });
+        if (!baseActiveByKv[kvKey]) baseActiveByKv[kvKey] = [];
+        baseActiveByKv[kvKey].push(geom.d);
+
+        const bucketKey = `${kvKey}_${speedBucket}`;
+        if (!animActiveByKvSpeed[bucketKey]) {
+          animActiveByKvSpeed[bucketKey] = { kv: kvKey, speed: speedBucket, paths: [] };
+        }
+        animActiveByKvSpeed[bucketKey].paths.push(geom.d);
       }
     });
   }
-
-  const cableGeometries: ComputedCableGeometry[] = [];
-  const baseDimmedByKv: Record<number, string[]> = { 500: [], 220: [], 132: [], 33: [], 13.2: [] };
-  const baseActiveByKv: Record<number, string[]> = { 500: [], 220: [], 132: [], 33: [], 13.2: [] };
-  const animActiveByKvSpeed: Record<string, { kv: number; speed: 'fast' | 'med' | 'slow'; paths: string[] }> = {};
-
-  masterEdges.forEach((e) => {
-    const sPos = positions.get(String(e.source));
-    const tPos = positions.get(String(e.target));
-    if (!sPos || !tPos) return;
-
-    let sx = 0,
-      sy = 0,
-      tx = 0,
-      ty = 0;
-
-    let geom: { d: string; pts: [number, number][] };
-
-    if (isMap) {
-      sx = sPos.x + 18;
-      sy = sPos.y + 18;
-      tx = tPos.x + 18;
-      ty = tPos.y + 18;
-      geom = buildCurvedMapGeometry(sx, sy, tx, ty, e.curvature ?? 0.14);
-    } else {
-      const sGrid = logicalGrid.get(String(e.source));
-      const tGrid = logicalGrid.get(String(e.target));
-      if (!sGrid || !tGrid) return;
-
-      const sList = outBySource.get(String(e.source)) || [e];
-      const tList = inByTarget.get(String(e.target)) || [e];
-      const sIdx = sList.indexOf(e);
-      const tIdx = tList.indexOf(e);
-
-      const sStep = Math.min(10, 88 / Math.max(1, sList.length));
-      const tStep = Math.min(10, 88 / Math.max(1, tList.length));
-      const sOff = (sIdx - (sList.length - 1) / 2) * sStep;
-      const tOff = (tIdx - (tList.length - 1) / 2) * tStep;
-
-      const sBoxX = !isHorizontal ? colCoords[sGrid.col] : rowCoords[sGrid.row];
-      const sBoxY = !isHorizontal ? rowCoords[sGrid.row] : colCoords[sGrid.col];
-      const tBoxX = !isHorizontal ? colCoords[tGrid.col] : rowCoords[tGrid.row];
-      const tBoxY = !isHorizontal ? rowCoords[tGrid.row] : colCoords[tGrid.col];
-
-      if (!isHorizontal) {
-        sx = sBoxX + HALF_BOX + sOff;
-        sy = sBoxY + BOX_SIZE;
-        tx = tBoxX + HALF_BOX + tOff;
-        ty = tBoxY;
-      } else {
-        sx = sBoxX + BOX_SIZE;
-        sy = sBoxY + HALF_BOX + sOff;
-        tx = tBoxX;
-        ty = tBoxY + HALF_BOX + tOff;
-      }
-
-      const isAdjacent = tGrid.row - sGrid.row === 1;
-
-      if (isAdjacent) {
-        const track = aveAssignments.get(`${e.id}_adj`) || 0;
-        const aveBase = (!isHorizontal ? rowCoords[sGrid.row] : colCoords[sGrid.col]) + BOX_SIZE + 18;
-        const bend = aveBase + track * MIN_CABLE_PITCH;
-        geom = buildStreetAvenueGeometry(sx, sy, tx, ty, isHorizontal, true, bend, 0, 0);
-      } else {
-        const depTrack = aveAssignments.get(`${e.id}_dep`) || 0;
-        const arrTrack = aveAssignments.get(`${e.id}_arr`) || 0;
-        const streetTrack = streetAssignments.get(e.id) || 0;
-
-        const streetCol = sGrid.col;
-        const sAveBase = (!isHorizontal ? rowCoords[sGrid.row] : colCoords[sGrid.col]) + BOX_SIZE + 18;
-        const arrRowIdx = Math.max(0, tGrid.row - 1);
-        const tAveBase = (!isHorizontal ? rowCoords[arrRowIdx] : colCoords[arrRowIdx]) + BOX_SIZE + 18;
-        const streetBase = (!isHorizontal ? colCoords[streetCol] : rowCoords[streetCol]) + BOX_SIZE + 16;
-
-        const y1 = sAveBase + depTrack * MIN_CABLE_PITCH;
-        const y2 = tAveBase + arrTrack * MIN_CABLE_PITCH;
-        const xs = streetBase + streetTrack * MIN_CABLE_PITCH;
-
-        geom = buildStreetAvenueGeometry(sx, sy, tx, ty, isHorizontal, false, y1, y2, xs);
-      }
-    }
-
-    const factor = getRegionFactor(e.region);
-    const liveAmperes = Math.round(e.amperes * factor);
-    const kvKey = normalizeKvKey(e.kv);
-    const speedBucket = getSpeedBucket(liveAmperes);
-
-    const edgeDimmed = !activeEdgeIds.has(e.id);
-
-    const enrichedEdge: GridEdgeData = {
-      ...e,
-      amperes: liveAmperes,
-      isDimmed: edgeDimmed
-    };
-
-    let minX = Infinity,
-      minY = Infinity,
-      maxX = -Infinity,
-      maxY = -Infinity;
-    for (let p = 0; p < geom.pts.length; p++) {
-      const px = geom.pts[p][0];
-      const py = geom.pts[p][1];
-      if (px < minX) minX = px;
-      if (py < minY) minY = py;
-      if (px > maxX) maxX = px;
-      if (py > maxY) maxY = py;
-    }
-
-    cableGeometries.push({
-      edge: enrichedEdge,
-      kvKey,
-      speedBucket,
-      d: geom.d,
-      pts: geom.pts,
-      minX: minX - 20,
-      minY: minY - 20,
-      maxX: maxX + 20,
-      maxY: maxY + 20,
-      path2D: typeof Path2D !== 'undefined' ? new Path2D(geom.d) : undefined
-    });
-
-    if (edgeDimmed) {
-      if (!baseDimmedByKv[kvKey]) baseDimmedByKv[kvKey] = [];
-      baseDimmedByKv[kvKey].push(geom.d);
-    } else {
-      if (!baseActiveByKv[kvKey]) baseActiveByKv[kvKey] = [];
-      baseActiveByKv[kvKey].push(geom.d);
-
-      const bucketKey = `${kvKey}_${speedBucket}`;
-      if (!animActiveByKvSpeed[bucketKey]) {
-        animActiveByKvSpeed[bucketKey] = { kv: kvKey, speed: speedBucket, paths: [] };
-      }
-      animActiveByKvSpeed[bucketKey].paths.push(geom.d);
-    }
-  });
 
   let worldMinX = Infinity,
     worldMinY = Infinity,
@@ -1137,6 +1637,10 @@ function computeLayoutAndBatchedCables(
   ];
 
   return {
+    worldMinX,
+    worldMinY,
+    worldMaxX,
+    worldMaxY,
     boundsNodes,
     positionedNodes,
     dimmedNodes,
@@ -1158,6 +1662,7 @@ function computeLayoutAndBatchedCables(
       speed: b.speed,
       d: b.paths.join(' ')
     })),
+    busPlaques,
     visibleCount: hasActiveFilter ? activeNodes.length : masterNodes.length,
     visibleEdgesCount: hasActiveFilter ? activeCables.length : masterEdges.length
   };
@@ -1203,7 +1708,7 @@ function cableCrossesViewport(
 }
 
 const FlowSceneInner: React.FC<{
-  layoutMode: 'DAGRE_LR' | 'DAGRE_TB' | 'MAP';
+  layoutMode: 'DAGRE_LR' | 'DAGRE_TB' | 'BUSES' | 'MAP';
   topology: TopologyData | null;
   telemetry: TelemetryData | null;
   filterKv: number | null;
@@ -1233,7 +1738,7 @@ const FlowSceneInner: React.FC<{
   onSelectEdge,
   onCountsChange
 }) => {
-  const { fitView, screenToFlowPosition, getViewport } = useReactFlow();
+  const { fitView, setViewport, screenToFlowPosition, getViewport } = useReactFlow();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const zoomTextRef = useRef<HTMLSpanElement>(null);
   const vpRef = useRef<Viewport>({ x: 0, y: 0, zoom: 0.14 });
@@ -1245,6 +1750,10 @@ const FlowSceneInner: React.FC<{
   const { allNodes, allEdges } = useMemo(() => buildMasterDataset(topology), [topology]);
 
   const {
+    worldMinX,
+    worldMinY,
+    worldMaxX,
+    worldMaxY,
     boundsNodes,
     positionedNodes,
     dimmedNodes,
@@ -1255,6 +1764,7 @@ const FlowSceneInner: React.FC<{
     batchedDimmedBase,
     batchedActiveBase,
     batchedActiveAnim,
+    busPlaques,
     visibleCount,
     visibleEdgesCount
   } = useMemo(
@@ -1355,7 +1865,7 @@ const FlowSceneInner: React.FC<{
         speed: b.speed,
         cfg,
         dash: [dashLen, gapLen],
-        path: new Path2D(b.paths)
+        path: new Path2D(b.d)
       };
     });
 
@@ -1394,6 +1904,7 @@ const FlowSceneInner: React.FC<{
 
     const isMap = layoutMode === 'MAP';
     const isHoriz = layoutMode === 'DAGRE_LR';
+    const isBuses = layoutMode === 'BUSES';
     const showDetail = vp.zoom >= (isMap ? MAP_LOD_ZOOM : PLANO_LOD_ZOOM);
 
     // 1. Provincias de Argentina (Modo Mapa)
@@ -1412,6 +1923,49 @@ const FlowSceneInner: React.FC<{
         ctx.strokeStyle = w.color;
         ctx.lineWidth = w.w;
         ctx.stroke(w.path);
+      }
+    }
+
+    // 1c. Barras Colectoras Troncales Físicas y Carteles SCADA (Modo BUSES)
+    if (isBuses && busPlaques && busPlaques.length > 0) {
+      for (let i = 0; i < busPlaques.length; i++) {
+        const bp = busPlaques[i];
+        if (bp.y < viewMinY - 140 || bp.y > viewMaxY + 140) continue;
+
+        // Barra colectora física (8px cobreado/tensión con alma blanca nítida)
+        ctx.fillStyle = bp.color;
+        ctx.fillRect(40, bp.y - 4, 5100 - 80, 8);
+        ctx.fillStyle = '#FAF8F3';
+        ctx.fillRect(40, bp.y - 1, 5100 - 80, 2);
+
+        // Cartel SCADA flotante sobre la barra con escala adaptable para vista lejana
+        const scale = Math.min(2.5, Math.max(1.0, 0.28 / Math.max(0.08, vp.zoom)));
+        const plaqueW = 660 * scale;
+        const plaqueH = 38 * scale;
+        const px = Math.max(viewMinX + 40, Math.min(viewMaxX - plaqueW - 40, 80));
+        const py = bp.y - plaqueH - 12;
+
+        ctx.fillStyle = 'rgba(250, 248, 243, 0.96)';
+        ctx.fillRect(px, py, plaqueW, plaqueH);
+        ctx.strokeStyle = bp.color;
+        ctx.lineWidth = 2.0 * scale;
+        ctx.strokeRect(px, py, plaqueW, plaqueH);
+
+        // Barra de color lateral
+        ctx.fillStyle = bp.color;
+        ctx.fillRect(px, py, 8 * scale, plaqueH);
+
+        // Texto del título
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.font = `700 ${(13 * scale).toFixed(1)}px "IBM Plex Sans", sans-serif`;
+        ctx.fillStyle = '#222426';
+        ctx.fillText(bp.title, px + 18 * scale, py + 12 * scale);
+
+        // Subtítulo técnico
+        ctx.font = `600 ${(10 * scale).toFixed(1)}px "IBM Plex Mono", monospace`;
+        ctx.fillStyle = '#68655E';
+        ctx.fillText(bp.subtitle, px + 18 * scale, py + 26 * scale);
       }
     }
 
@@ -1705,6 +2259,7 @@ const FlowSceneInner: React.FC<{
     activeNodes,
     dimmedCables,
     activeCables,
+    busPlaques,
     layoutMode,
     filterKv,
     filterRegion,
@@ -1743,32 +2298,53 @@ const FlowSceneInner: React.FC<{
   // o en la carga inicial.
   // Al tocar filtros (tensión, rol, región, tecnología, búsqueda), se preserva el nivel de zoom y posición actual.
   const prevLayoutModeRef = useRef<string>('');
+  const hasInitialFitRef = useRef<boolean>(false);
+
   useEffect(() => {
     if (positionedNodes.length === 0) return;
 
-    if (prevLayoutModeRef.current === layoutMode) {
+    const isInitial = !hasInitialFitRef.current;
+    if (!isInitial && prevLayoutModeRef.current === layoutMode) {
       // Si solo cambiaron los filtros o búsqueda, redibujar sin tocar el zoom ni mover la cámara
       renderCanvasFrame();
       return;
     }
+    hasInitialFitRef.current = true;
     prevLayoutModeRef.current = layoutMode;
 
-    const timer = setTimeout(() => {
+    const canvas = canvasRef.current;
+    const cw = canvas?.clientWidth || window.innerWidth;
+    const ch = canvas?.clientHeight || (window.innerHeight - 80);
+
+    const W = worldMaxX - worldMinX;
+    const H = worldMaxY - worldMinY;
+    if (W > 0 && H > 0) {
+      const pad = 0.06;
+      const targetZoom = Math.max(0.04, Math.min(1.2, Math.min((cw * (1 - 2 * pad)) / W, (ch * (1 - 2 * pad)) / H)));
+      const targetX = (cw - W * targetZoom) / 2 - worldMinX * targetZoom;
+      const targetY = (ch - H * targetZoom) / 2 - worldMinY * targetZoom;
+
+      setViewport({ x: targetX, y: targetY, zoom: targetZoom }, { duration: isInitial ? 0 : 260 });
+      vpRef.current = { x: targetX, y: targetY, zoom: targetZoom };
+      if (zoomTextRef.current) {
+        zoomTextRef.current.textContent = `ZOOM ${formatDecimalAr(targetZoom, 2)}x`;
+      }
+      renderCanvasFrame();
+    } else {
       fitView({ padding: 0.08, duration: 240 });
       setTimeout(() => {
         vpRef.current = getViewport();
         renderCanvasFrame();
       }, 260);
-    }, 40);
-    return () => clearTimeout(timer);
+    }
   }, [
     layoutMode,
-    filterKv,
-    filterRole,
-    filterRegion,
-    filterTech,
-    searchQuery,
     positionedNodes.length,
+    worldMinX,
+    worldMinY,
+    worldMaxX,
+    worldMaxY,
+    setViewport,
     fitView,
     getViewport,
     renderCanvasFrame
@@ -1951,7 +2527,7 @@ const FlowSceneInner: React.FC<{
 // 8. COMPONENTE PRINCIPAL SADI (830 PARTICIPANTES + TELEMETRÍA EN VIVO)
 // ============================================================================
 export const PrototypeDagre: React.FC = () => {
-  const [layoutMode, setLayoutMode] = useState<'DAGRE_LR' | 'DAGRE_TB' | 'MAP'>('DAGRE_TB');
+  const [layoutMode, setLayoutMode] = useState<'DAGRE_LR' | 'DAGRE_TB' | 'BUSES' | 'MAP'>('DAGRE_TB');
   const [topology, setTopology] = useState<TopologyData | null>(null);
   const [telemetry, setTelemetry] = useState<TelemetryData | null>(null);
   const [filterKv, setFilterKv] = useState<number | null>(null);
@@ -2097,6 +2673,22 @@ export const PrototypeDagre: React.FC = () => {
             }}
           >
             🌳 PLANO VERTICAL
+          </button>
+          <button
+            onClick={() => setLayoutMode('BUSES')}
+            style={{
+              fontFamily: '"IBM Plex Mono", monospace',
+              fontSize: '11px',
+              fontWeight: 700,
+              padding: '6px 11px',
+              border: 'none',
+              borderRight: '1px solid #C8C2B4',
+              cursor: 'pointer',
+              backgroundColor: layoutMode === 'BUSES' ? '#222426' : 'transparent',
+              color: layoutMode === 'BUSES' ? '#FAF8F3' : '#222426'
+            }}
+          >
+            ⚡ PLANO BARRAS
           </button>
           <button
             onClick={() => setLayoutMode('DAGRE_LR')}
