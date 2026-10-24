@@ -75,7 +75,7 @@ const ROW_PITCH = 340; // 124px caja + 216px avenida horizontal libre entre fila
 // ============================================================================
 // 2. ICONOS VECTORIALES PRE-COMPILADOS EN PATH2D (COORDENADAS 24x24 LUCIDE)
 // ============================================================================
-export type NodeRole = 'GEN' | 'ET500' | 'ET132' | 'DIST' | 'COOP';
+export type NodeRole = 'GEN' | 'ET500' | 'ET220' | 'ET132' | 'DIST' | 'COOP';
 export type IconKind = 'hydro' | 'nuclear' | 'solar' | 'wind' | 'thermal' | 'biomass' | 'et500' | 'et132' | 'dist' | 'coop';
 
 const ICON_SVG_PATHS: Record<IconKind, string> = {
@@ -506,7 +506,7 @@ function buildMasterDataset(topology: TopologyData | null): {
   topology.eett.forEach((e, idx) => {
     const uid = e.uid || `EETT_${e.id}_${idx}`;
     const kv = normalizeKvKey(e.tension_kv || 132);
-    const role: NodeRole = kv >= 500 ? 'ET500' : 'ET132';
+    const role: NodeRole = kv >= 500 ? 'ET500' : kv >= 220 ? 'ET220' : 'ET132';
     const mw = Math.round(e.potencia_mw || (kv >= 500 ? 450 : 120));
     const amp = Math.max(110, Math.round((mw * 1000) / (1.732 * kv * 0.92)));
     const reg = e.region === 'BAS' ? 'GBA' : e.region || 'Centro';
@@ -520,7 +520,7 @@ function buildMasterDataset(topology: TopologyData | null): {
       shortTitle2: t2,
       code: `${e.id} · EETT ${kv}KV`,
       role,
-      typeName: role === 'ET500' ? '2. Transporte 500 kV' : '3. Subestación AT/MT',
+      typeName: role === 'ET500' ? '2. Transporte 500 kV' : role === 'ET220' ? '3. Transporte 220 kV' : '3. Subestación AT/MT',
       iconKind: role === 'ET500' ? 'et500' : 'et132',
       voltageKv: kv,
       kvText: VOLTAGE_CONFIG[kv]?.displayKv || `${kv} kV`,
@@ -682,7 +682,13 @@ function computeLayoutAndBatchedCables(
 
   const directMatchUids = new Set<string>();
   masterNodes.forEach((n) => {
-    if (filterRole && n.role !== filterRole) return;
+    if (filterRole) {
+      if (filterRole === 'ET132') {
+        if (n.role !== 'ET132' && n.role !== 'ET220') return;
+      } else if (n.role !== filterRole) {
+        return;
+      }
+    }
     if (filterRegion && n.region.toUpperCase() !== filterRegion.toUpperCase()) return;
     if (filterTech && n.tecnologia !== filterTech) return;
     if (filterKv !== null && normalizeKvKey(n.voltageKv) !== filterKv) return;
@@ -746,31 +752,135 @@ function computeLayoutAndBatchedCables(
   if (isBuses) {
     // ========================================================================
     // MODO PLANO COMPACTO POR BUSES (BARRAS COLECTORAS)
-    // Agrupa generadoras, transformadoras, transporte y cooperativas en pisos
-    // con barras colectoras troncales donde confluyen todas las conexiones.
+    // Agrupa generadoras, transformadoras, transporte y cooperativas en niveles
+    // de tensión reales del SADI, respetando las transformaciones físicas
+    // (tensión de entrada por arriba, tensión de salida por abajo).
     // ========================================================================
-    const tiers: NodeRole[] = ['GEN', 'ET500', 'ET132', 'DIST', 'COOP'];
+    interface BusTierDef {
+      id: string;
+      title: string;
+      filter: (n: GridNodeData) => boolean;
+      inKv: number | null; // Tensión de entrada por arriba (null si es generación)
+      outKv: number | null; // Tensión de salida por abajo (null si es cooperativa)
+      busPlaqueAfter?: {
+        title: string;
+        subtitle: string;
+        kv: number;
+      };
+    }
+
+    const busTierDefs: BusTierDef[] = [
+      // 1. GENERACIÓN 500 kV
+      {
+        id: 'GEN_500',
+        title: 'Centrales Generadoras 500 kV',
+        filter: (n) => n.role === 'GEN' && n.voltageKv >= 500,
+        inKv: null,
+        outKv: 500,
+        busPlaqueAfter: {
+          title: '⚡ BARRA TRONCAL NACIONAL 500 kV (EXTRA ALTA TENSIÓN)',
+          subtitle: 'Interconexión Nacional Transener · 26 Centrales y 59 Estaciones 500 kV',
+          kv: 500
+        }
+      },
+      // 2. TRANSFORMACIÓN 500 kV (Entrada 500 kV, Salida transformada 220 kV)
+      {
+        id: 'ET_500',
+        title: 'Estaciones Transformadoras 500 kV',
+        filter: (n) => n.role === 'ET500',
+        inKv: 500,
+        outKv: 220
+      },
+      // 3. GENERACIÓN 220 kV
+      {
+        id: 'GEN_220',
+        title: 'Centrales Generadoras 220 kV',
+        filter: (n) => n.role === 'GEN' && n.voltageKv >= 220 && n.voltageKv < 500,
+        inKv: null,
+        outKv: 220,
+        busPlaqueAfter: {
+          title: '⚡ BARRA TRONCAL NACIONAL 220 kV (ALTA TENSIÓN TRONCAL)',
+          subtitle: 'Sistema Interconectado 220 kV · 140 Centrales y 15 Subestaciones',
+          kv: 220
+        }
+      },
+      // 4. TRANSFORMACIÓN 220 kV (Entrada 220 kV, Salida transformada 132 kV)
+      {
+        id: 'ET_220',
+        title: 'Estaciones Transformadoras 220 kV',
+        filter: (n) => n.role === 'ET220',
+        inKv: 220,
+        outKv: 132
+      },
+      // 5. GENERACIÓN 132 kV
+      {
+        id: 'GEN_132',
+        title: 'Centrales Generadoras 132 kV',
+        filter: (n) => n.role === 'GEN' && n.voltageKv >= 132 && n.voltageKv < 220,
+        inKv: null,
+        outKv: 132,
+        busPlaqueAfter: {
+          title: '⚡ BARRA DE SUBTRANSMISIÓN REGIONAL 132 kV',
+          subtitle: 'Transporte Regional por Distribución Troncal · 183 Centrales y 245 Subestaciones',
+          kv: 132
+        }
+      },
+      // 6. TRANSFORMACIÓN 132 kV (Entrada 132 kV, Salida transformada 33 kV)
+      {
+        id: 'ET_132',
+        title: 'Estaciones Transformadoras 132 kV',
+        filter: (n) => n.role === 'ET132',
+        inKv: 132,
+        outKv: 33
+      },
+      // 7. GENERACIÓN MEDIA TENSIÓN (33 kV)
+      {
+        id: 'GEN_33',
+        title: 'Centrales Generadoras 33 kV / Media Tensión',
+        filter: (n) => n.role === 'GEN' && n.voltageKv < 132,
+        inKv: null,
+        outKv: 33,
+        busPlaqueAfter: {
+          title: '⚡ BARRA DE DISTRIBUCIÓN URBANA Y RURAL 33 kV / 13,2 kV',
+          subtitle: 'Alimentación a Redes de Distribución Provincial · 33 Empresas Distribuidoras',
+          kv: 33
+        }
+      },
+      // 8. DISTRIBUIDORAS PROVINCIALES (Entrada 33 kV, Salida 13,2 kV)
+      {
+        id: 'DIST',
+        title: 'Distribuidoras Provinciales',
+        filter: (n) => n.role === 'DIST',
+        inKv: 33,
+        outKv: 13.2,
+        busPlaqueAfter: {
+          title: '⚡ BARRA COLECTORA DE COOPERATIVAS ELÉCTRICAS 13,2 kV',
+          subtitle: 'Alimentación a 580 Cooperativas Eléctricas de Servicios Públicos',
+          kv: 13.2
+        }
+      },
+      // 9. COOPERATIVAS ELÉCTRICAS (Entrada 13,2 kV)
+      {
+        id: 'COOP',
+        title: 'Cooperativas Eléctricas',
+        filter: (n) => n.role === 'COOP',
+        inKv: 13.2,
+        outKv: null
+      }
+    ];
+
     const maxCols = 34;
     const COL_GAP = 26;
     const COL_PITCH = BOX_SIZE + COL_GAP; // 150px
-    const ROW_GAP = 48;
-    const ROW_PITCH = BOX_SIZE + ROW_GAP; // 172px
-    const INTER_TIER_GAP = 220;
+    const ROW_GAP = 54;
+    const ROW_PITCH = BOX_SIZE + ROW_GAP; // 178px
+    const diagramW = maxCols * COL_PITCH;
 
     let currentY = 40;
-    const tierBoundaries: { role: NodeRole; startY: number; endY: number; numSubRows: number }[] = [];
-    const subrowBuses: {
-      tier: NodeRole;
-      subrow: number;
-      minX: number;
-      maxX: number;
-      outBusY: number;
-      inBusY: number;
-    }[] = [];
 
-    tiers.forEach((tierRole) => {
+    busTierDefs.forEach((tierDef) => {
       const tierNodes = masterNodes
-        .filter((n) => n.role === tierRole)
+        .filter(tierDef.filter)
         .sort((a, b) => {
           const ra = REGION_ORDER[a.region] ?? 4;
           const rb = REGION_ORDER[b.region] ?? 4;
@@ -781,7 +891,7 @@ function computeLayoutAndBatchedCables(
       if (tierNodes.length === 0) return;
 
       const numSubRows = Math.ceil(tierNodes.length / maxCols);
-      const startY = currentY;
+      const subrowYs: { inBusY: number; outBusY: number; minX: number; maxX: number }[] = [];
 
       for (let sr = 0; sr < numSubRows; sr++) {
         const startIdx = sr * maxCols;
@@ -793,450 +903,399 @@ function computeLayoutAndBatchedCables(
 
         let minX = Infinity,
           maxX = -Infinity;
+
+        const inBusY = rowY - 26;
+        const outBusY = rowY + BOX_SIZE + 26;
+
         for (let i = startIdx; i < endIdx; i++) {
+          const n = tierNodes[i];
           const colInRow = i - startIdx;
           const nodeX = offsetLeft + colInRow * COL_PITCH;
           if (nodeX < minX) minX = nodeX;
           if (nodeX + BOX_SIZE > maxX) maxX = nodeX + BOX_SIZE;
-          positions.set(tierNodes[i].uid, { x: nodeX, y: rowY });
+          positions.set(n.uid, { x: nodeX, y: rowY });
+
+          const pinX = nodeX + HALF_BOX;
+          const isNodeDimmed = !illuminatedNodeUids.has(n.uid);
+          const factor = getRegionFactor(n.region);
+          const liveAmps = Math.round(n.amperes * factor);
+          const speed = getSpeedBucket(liveAmps);
+
+          // 1. Feeder de Entrada (Top Pin hacia inBusY)
+          if (tierDef.inKv !== null) {
+            const inKv = tierDef.inKv;
+            const isFeederDimmed = isNodeDimmed || (filterKv !== null && filterKv !== inKv);
+            const inY = rowY;
+            const dIn = `M ${pinX.toFixed(1)},${inBusY.toFixed(1)} L ${pinX.toFixed(1)},${inY.toFixed(1)}`;
+            const edgeIn: GridEdgeData = {
+              id: `FEEDER_IN_${n.uid}`,
+              source: `BUS_${tierDef.id}_IN`,
+              target: n.uid,
+              kv: inKv,
+              amperes: liveAmps,
+              mw: n.powerMw,
+              parallelCount: 1,
+              fromName: `Alimentación ${inKv} kV`,
+              toName: n.label,
+              empresa: n.operator,
+              region: n.region,
+              curvature: 0,
+              laneHash: 1,
+              isDimmed: isFeederDimmed
+            };
+            cableGeometries.push({
+              edge: edgeIn,
+              kvKey: inKv,
+              speedBucket: speed,
+              d: dIn,
+              pts: [
+                [pinX, inBusY],
+                [pinX, inY]
+              ],
+              minX: pinX - 5,
+              minY: inBusY - 2,
+              maxX: pinX + 5,
+              maxY: inY + 2,
+              path2D: typeof Path2D !== 'undefined' ? new Path2D(dIn) : undefined
+            });
+
+            if (isFeederDimmed) {
+              if (!baseDimmedByKv[inKv]) baseDimmedByKv[inKv] = [];
+              baseDimmedByKv[inKv].push(dIn);
+            } else {
+              if (!baseActiveByKv[inKv]) baseActiveByKv[inKv] = [];
+              baseActiveByKv[inKv].push(dIn);
+              const bKey = `${inKv}_${speed}`;
+              if (!animActiveByKvSpeed[bKey]) animActiveByKvSpeed[bKey] = { kv: inKv, speed, paths: [] };
+              animActiveByKvSpeed[bKey].paths.push(dIn);
+            }
+          }
+
+          // 2. Feeder de Salida (Bottom Pin hacia outBusY)
+          if (tierDef.outKv !== null) {
+            const outKv = tierDef.outKv;
+            const isFeederDimmed = isNodeDimmed || (filterKv !== null && filterKv !== outKv);
+            const outY = rowY + BOX_SIZE;
+            const dOut = `M ${pinX.toFixed(1)},${outY.toFixed(1)} L ${pinX.toFixed(1)},${outBusY.toFixed(1)}`;
+            const edgeOut: GridEdgeData = {
+              id: `FEEDER_OUT_${n.uid}`,
+              source: n.uid,
+              target: `BUS_${tierDef.id}_OUT`,
+              kv: outKv,
+              amperes: liveAmps,
+              mw: n.powerMw,
+              parallelCount: 1,
+              fromName: n.label,
+              toName: `Salida Transformada ${outKv} kV`,
+              empresa: n.operator,
+              region: n.region,
+              curvature: 0,
+              laneHash: 2,
+              isDimmed: isFeederDimmed
+            };
+            cableGeometries.push({
+              edge: edgeOut,
+              kvKey: outKv,
+              speedBucket: speed,
+              d: dOut,
+              pts: [
+                [pinX, outY],
+                [pinX, outBusY]
+              ],
+              minX: pinX - 5,
+              minY: outY - 2,
+              maxX: pinX + 5,
+              maxY: outBusY + 2,
+              path2D: typeof Path2D !== 'undefined' ? new Path2D(dOut) : undefined
+            });
+
+            if (isFeederDimmed) {
+              if (!baseDimmedByKv[outKv]) baseDimmedByKv[outKv] = [];
+              baseDimmedByKv[outKv].push(dOut);
+            } else {
+              if (!baseActiveByKv[outKv]) baseActiveByKv[outKv] = [];
+              baseActiveByKv[outKv].push(dOut);
+              const bKey = `${outKv}_${speed}`;
+              if (!animActiveByKvSpeed[bKey]) animActiveByKvSpeed[bKey] = { kv: outKv, speed, paths: [] };
+              animActiveByKvSpeed[bKey].paths.push(dOut);
+            }
+          }
         }
 
-        subrowBuses.push({
-          tier: tierRole,
-          subrow: sr,
-          minX: minX - 16,
-          maxX: maxX + 16,
-          outBusY: rowY + BOX_SIZE + 24,
-          inBusY: rowY - 24
-        });
+        subrowYs.push({ inBusY, outBusY, minX: minX - 16, maxX: maxX + 16 });
+
+        // Trazado de las sub-barras horizontales de esta fila
+        if (tierDef.inKv !== null) {
+          const inKv = tierDef.inKv;
+          const isDimmed = filterKv !== null && filterKv !== inKv;
+          const speed = 'med';
+          const dSubIn = `M ${(minX - 16).toFixed(1)},${inBusY.toFixed(1)} L ${(maxX + 16).toFixed(1)},${inBusY.toFixed(1)}`;
+          const edgeSubIn: GridEdgeData = {
+            id: `SUB_IN_${tierDef.id}_${sr}`,
+            source: `BUS_${tierDef.id}`,
+            target: `BUS_${tierDef.id}`,
+            kv: inKv,
+            amperes: 600,
+            mw: `Sub-barra ${inKv} kV`,
+            parallelCount: 1,
+            fromName: `Sub-barra ${inKv} kV`,
+            toName: `Sub-barra ${inKv} kV`,
+            empresa: 'SADI',
+            region: 'Nacional',
+            curvature: 0,
+            laneHash: 3,
+            isDimmed
+          };
+          cableGeometries.push({
+            edge: edgeSubIn,
+            kvKey: inKv,
+            speedBucket: speed,
+            d: dSubIn,
+            pts: [
+              [minX - 16, inBusY],
+              [maxX + 16, inBusY]
+            ],
+            minX: minX - 20,
+            minY: inBusY - 4,
+            maxX: maxX + 20,
+            maxY: inBusY + 4,
+            path2D: typeof Path2D !== 'undefined' ? new Path2D(dSubIn) : undefined
+          });
+          if (isDimmed) {
+            if (!baseDimmedByKv[inKv]) baseDimmedByKv[inKv] = [];
+            baseDimmedByKv[inKv].push(dSubIn);
+          } else {
+            if (!baseActiveByKv[inKv]) baseActiveByKv[inKv] = [];
+            baseActiveByKv[inKv].push(dSubIn);
+            const bKey = `${inKv}_${speed}`;
+            if (!animActiveByKvSpeed[bKey]) animActiveByKvSpeed[bKey] = { kv: inKv, speed, paths: [] };
+            animActiveByKvSpeed[bKey].paths.push(dSubIn);
+          }
+        }
+
+        if (tierDef.outKv !== null) {
+          const outKv = tierDef.outKv;
+          const isDimmed = filterKv !== null && filterKv !== outKv;
+          const speed = 'med';
+          const dSubOut = `M ${(minX - 16).toFixed(1)},${outBusY.toFixed(1)} L ${(maxX + 16).toFixed(1)},${outBusY.toFixed(1)}`;
+          const edgeSubOut: GridEdgeData = {
+            id: `SUB_OUT_${tierDef.id}_${sr}`,
+            source: `BUS_${tierDef.id}`,
+            target: `BUS_${tierDef.id}`,
+            kv: outKv,
+            amperes: 600,
+            mw: `Sub-barra ${outKv} kV`,
+            parallelCount: 1,
+            fromName: `Sub-barra ${outKv} kV`,
+            toName: `Sub-barra ${outKv} kV`,
+            empresa: 'SADI',
+            region: 'Nacional',
+            curvature: 0,
+            laneHash: 4,
+            isDimmed
+          };
+          cableGeometries.push({
+            edge: edgeSubOut,
+            kvKey: outKv,
+            speedBucket: speed,
+            d: dSubOut,
+            pts: [
+              [minX - 16, outBusY],
+              [maxX + 16, outBusY]
+            ],
+            minX: minX - 20,
+            minY: outBusY - 4,
+            maxX: maxX + 20,
+            maxY: outBusY + 4,
+            path2D: typeof Path2D !== 'undefined' ? new Path2D(dSubOut) : undefined
+          });
+          if (isDimmed) {
+            if (!baseDimmedByKv[outKv]) baseDimmedByKv[outKv] = [];
+            baseDimmedByKv[outKv].push(dSubOut);
+          } else {
+            if (!baseActiveByKv[outKv]) baseActiveByKv[outKv] = [];
+            baseActiveByKv[outKv].push(dSubOut);
+            const bKey = `${outKv}_${speed}`;
+            if (!animActiveByKvSpeed[bKey]) animActiveByKvSpeed[bKey] = { kv: outKv, speed, paths: [] };
+            animActiveByKvSpeed[bKey].paths.push(dSubOut);
+          }
+        }
 
         currentY += ROW_PITCH;
       }
 
-      const endY = currentY - ROW_GAP;
-      tierBoundaries.push({ role: tierRole, startY, endY, numSubRows });
-      currentY += INTER_TIER_GAP;
-    });
+      // Si el piso tiene múltiples subfilas, unir sus sub-barras en los laterales limpios (minX y maxX)
+      if (subrowYs.length > 1) {
+        if (tierDef.inKv !== null) {
+          const inKv = tierDef.inKv;
+          const isDimmed = filterKv !== null && filterKv !== inKv;
+          const speed = 'med';
+          const firstInY = subrowYs[0].inBusY;
+          const lastInY = subrowYs[subrowYs.length - 1].inBusY;
+          const leftX = Math.min(...subrowYs.map((s) => s.minX));
+          const rightX = Math.max(...subrowYs.map((s) => s.maxX));
 
-    const diagramW = maxCols * COL_PITCH;
-
-    // Placas de barras troncales en los espacios entre pisos
-    for (let t = 0; t < tierBoundaries.length - 1; t++) {
-      const tUpper = tierBoundaries[t];
-      const tLower = tierBoundaries[t + 1];
-      const midY = Math.round((tUpper.endY + tLower.startY) / 2);
-      let title = '',
-        sub = '',
-        kv = 132;
-      if (t === 0) {
-        title = '⚡ BARRA COLECTORA DE GENERACIÓN (MT / AT)';
-        sub = 'Recepción e inyección de 474 centrales generadoras del SADI';
-        kv = 132;
-      } else if (t === 1) {
-        title = '⚡ BARRA TRONCAL NACIONAL 500 kV (EXTRA ALTA TENSIÓN)';
-        sub = 'Interconexión Nacional Transener · 59 Estaciones 500 kV';
-        kv = 500;
-      } else if (t === 2) {
-        title = '⚡ BARRA DE SUBTRANSMISIÓN PROVINCIAL 132 kV / 220 kV';
-        sub = 'Distribución en Alta Tensión Regional · 264 Subestaciones';
-        kv = 132;
-      } else if (t === 3) {
-        title = '⚡ BARRA DE DISTRIBUCIÓN URBANA Y RURAL 13,2 kV / 33 kV';
-        sub = 'Alimentación a Distribuidoras Provinciales y 580 Cooperativas Eléctricas';
-        kv = 13.2;
-      }
-      const cfg = VOLTAGE_CONFIG[kv] || VOLTAGE_CONFIG[132];
-      busPlaques.push({ y: midY, title, subtitle: sub, kv, color: cfg.color });
-    }
-
-    // 1. Feeders desde y hacia cada estación
-    masterNodes.forEach((n) => {
-      const pos = positions.get(n.uid);
-      if (!pos) return;
-      const kv = normalizeKvKey(n.voltageKv);
-      const isDimmed = !illuminatedNodeUids.has(n.uid);
-      const factor = getRegionFactor(n.region);
-      const liveAmps = Math.round(n.amperes * factor);
-      const speed = getSpeedBucket(liveAmps);
-
-      const pinX = pos.x + HALF_BOX;
-
-      // Alimentación de salida (generadoras y transformadoras)
-      if (n.role !== 'COOP') {
-        const outY = pos.y + BOX_SIZE;
-        const targetBusY = outY + 24;
-        const geomD = `M ${pinX.toFixed(1)},${outY.toFixed(1)} L ${pinX.toFixed(1)},${targetBusY.toFixed(1)}`;
-        const pts: [number, number][] = [
-          [pinX, outY],
-          [pinX, targetBusY]
-        ];
-        const edgeData: GridEdgeData = {
-          id: `FEEDER_OUT_${n.uid}`,
-          source: n.uid,
-          target: `BUS_${n.role}`,
-          kv,
-          amperes: liveAmps,
-          mw: n.powerMw,
-          parallelCount: 1,
-          fromName: n.label,
-          toName: `Barra Colectora ${n.kvText}`,
-          empresa: n.operator,
-          region: n.region,
-          curvature: 0,
-          laneHash: 1,
-          isDimmed
-        };
-        cableGeometries.push({
-          edge: edgeData,
-          kvKey: kv,
-          speedBucket: speed,
-          d: geomD,
-          pts,
-          minX: pinX - 10,
-          minY: outY - 5,
-          maxX: pinX + 10,
-          maxY: targetBusY + 5,
-          path2D: typeof Path2D !== 'undefined' ? new Path2D(geomD) : undefined
-        });
-
-        if (isDimmed) {
-          if (!baseDimmedByKv[kv]) baseDimmedByKv[kv] = [];
-          baseDimmedByKv[kv].push(geomD);
-        } else {
-          if (!baseActiveByKv[kv]) baseActiveByKv[kv] = [];
-          baseActiveByKv[kv].push(geomD);
-          const bKey = `${kv}_${speed}`;
-          if (!animActiveByKvSpeed[bKey]) animActiveByKvSpeed[bKey] = { kv, speed, paths: [] };
-          animActiveByKvSpeed[bKey].paths.push(geomD);
-        }
-      }
-
-      // Alimentación de entrada (estaciones transformadoras, distribuidoras y cooperativas)
-      if (n.role !== 'GEN') {
-        const inY = pos.y;
-        const sourceBusY = inY - 24;
-        const geomD = `M ${pinX.toFixed(1)},${sourceBusY.toFixed(1)} L ${pinX.toFixed(1)},${inY.toFixed(1)}`;
-        const pts: [number, number][] = [
-          [pinX, sourceBusY],
-          [pinX, inY]
-        ];
-        const edgeData: GridEdgeData = {
-          id: `FEEDER_IN_${n.uid}`,
-          source: `BUS_${n.role}_IN`,
-          target: n.uid,
-          kv,
-          amperes: liveAmps,
-          mw: n.powerMw,
-          parallelCount: 1,
-          fromName: `Barra Colectora ${n.kvText}`,
-          toName: n.label,
-          empresa: n.operator,
-          region: n.region,
-          curvature: 0,
-          laneHash: 2,
-          isDimmed
-        };
-        cableGeometries.push({
-          edge: edgeData,
-          kvKey: kv,
-          speedBucket: speed,
-          d: geomD,
-          pts,
-          minX: pinX - 10,
-          minY: sourceBusY - 5,
-          maxX: pinX + 10,
-          maxY: inY + 5,
-          path2D: typeof Path2D !== 'undefined' ? new Path2D(geomD) : undefined
-        });
-
-        if (isDimmed) {
-          if (!baseDimmedByKv[kv]) baseDimmedByKv[kv] = [];
-          baseDimmedByKv[kv].push(geomD);
-        } else {
-          if (!baseActiveByKv[kv]) baseActiveByKv[kv] = [];
-          baseActiveByKv[kv].push(geomD);
-          const bKey = `${kv}_${speed}`;
-          if (!animActiveByKvSpeed[bKey]) animActiveByKvSpeed[bKey] = { kv, speed, paths: [] };
-          animActiveByKvSpeed[bKey].paths.push(geomD);
-        }
-      }
-    });
-
-    // 2. Trazado de las sub-barras colectoras de cada fila (horizontal buses)
-    subrowBuses.forEach((sb) => {
-      const kv =
-        sb.tier === 'ET500'
-          ? 500
-          : sb.tier === 'ET132'
-          ? 132
-          : sb.tier === 'DIST' || sb.tier === 'COOP'
-          ? 13.2
-          : 132;
-      const isDimmed = filterKv !== null && filterKv !== kv;
-      const speed = 'med';
-
-      // Barra colectora de salida de la fila (si emite energía hacia abajo)
-      if (sb.tier !== 'COOP') {
-        const dOut = `M ${sb.minX.toFixed(1)},${sb.outBusY.toFixed(1)} L ${sb.maxX.toFixed(1)},${sb.outBusY.toFixed(1)}`;
-        const edgeOut: GridEdgeData = {
-          id: `SUB_BUS_OUT_${sb.tier}_${sb.subrow}`,
-          source: `BUS_${sb.tier}`,
-          target: `BUS_${sb.tier}`,
-          kv,
-          amperes: 600,
-          mw: 'Barra Colectora',
-          parallelCount: 1,
-          fromName: `Sub-barra ${sb.tier}`,
-          toName: `Sub-barra ${sb.tier}`,
-          empresa: 'SADI',
-          region: 'Nacional',
-          curvature: 0,
-          laneHash: 3,
-          isDimmed
-        };
-        cableGeometries.push({
-          edge: edgeOut,
-          kvKey: kv,
-          speedBucket: speed,
-          d: dOut,
-          pts: [
-            [sb.minX, sb.outBusY],
-            [sb.maxX, sb.outBusY]
-          ],
-          minX: sb.minX,
-          minY: sb.outBusY - 5,
-          maxX: sb.maxX,
-          maxY: sb.outBusY + 5,
-          path2D: typeof Path2D !== 'undefined' ? new Path2D(dOut) : undefined
-        });
-
-        if (isDimmed) {
-          if (!baseDimmedByKv[kv]) baseDimmedByKv[kv] = [];
-          baseDimmedByKv[kv].push(dOut);
-        } else {
-          if (!baseActiveByKv[kv]) baseActiveByKv[kv] = [];
-          baseActiveByKv[kv].push(dOut);
-          const bKey = `${kv}_${speed}`;
-          if (!animActiveByKvSpeed[bKey]) animActiveByKvSpeed[bKey] = { kv, speed, paths: [] };
-          animActiveByKvSpeed[bKey].paths.push(dOut);
-        }
-      }
-
-      // Barra colectora de entrada de la fila (si recibe energía desde arriba)
-      if (sb.tier !== 'GEN') {
-        const dIn = `M ${sb.minX.toFixed(1)},${sb.inBusY.toFixed(1)} L ${sb.maxX.toFixed(1)},${sb.inBusY.toFixed(1)}`;
-        const edgeIn: GridEdgeData = {
-          id: `SUB_BUS_IN_${sb.tier}_${sb.subrow}`,
-          source: `BUS_${sb.tier}_IN`,
-          target: `BUS_${sb.tier}_IN`,
-          kv,
-          amperes: 600,
-          mw: 'Barra Colectora',
-          parallelCount: 1,
-          fromName: `Sub-barra ${sb.tier}`,
-          toName: `Sub-barra ${sb.tier}`,
-          empresa: 'SADI',
-          region: 'Nacional',
-          curvature: 0,
-          laneHash: 3,
-          isDimmed
-        };
-        cableGeometries.push({
-          edge: edgeIn,
-          kvKey: kv,
-          speedBucket: speed,
-          d: dIn,
-          pts: [
-            [sb.minX, sb.inBusY],
-            [sb.maxX, sb.inBusY]
-          ],
-          minX: sb.minX,
-          minY: sb.inBusY - 5,
-          maxX: sb.maxX,
-          maxY: sb.inBusY + 5,
-          path2D: typeof Path2D !== 'undefined' ? new Path2D(dIn) : undefined
-        });
-
-        if (isDimmed) {
-          if (!baseDimmedByKv[kv]) baseDimmedByKv[kv] = [];
-          baseDimmedByKv[kv].push(dIn);
-        } else {
-          if (!baseActiveByKv[kv]) baseActiveByKv[kv] = [];
-          baseActiveByKv[kv].push(dIn);
-          const bKey = `${kv}_${speed}`;
-          if (!animActiveByKvSpeed[bKey]) animActiveByKvSpeed[bKey] = { kv, speed, paths: [] };
-          animActiveByKvSpeed[bKey].paths.push(dIn);
-        }
-      }
-    });
-
-    // 2b. Troncales verticales colectoras (Risers de interconexión)
-    const riserXs = [
-      48,
-      Math.round(diagramW * 0.28),
-      Math.round(diagramW * 0.50),
-      Math.round(diagramW * 0.72),
-      diagramW - 48
-    ];
-    tierBoundaries.forEach((tb, tIdx) => {
-      const kv =
-        tb.role === 'ET500'
-          ? 500
-          : tb.role === 'ET132'
-          ? 132
-          : tb.role === 'DIST' || tb.role === 'COOP'
-          ? 13.2
-          : 132;
-      const isDimmed = filterKv !== null && filterKv !== kv;
-      const speed = 'fast';
-
-      // Risers que llevan energía hacia la barra troncal inferior
-      if (tIdx < busPlaques.length) {
-        const nextTrunkY = busPlaques[tIdx].y;
-        riserXs.forEach((rx, rIdx) => {
-          const dRiser = `M ${rx},${tb.startY} L ${rx},${nextTrunkY}`;
-          const edgeRiser: GridEdgeData = {
-            id: `RISER_DOWN_${tb.role}_${rIdx}`,
-            source: `RISER_${tb.role}`,
-            target: `TRUNK_${tIdx}`,
-            kv,
-            amperes: 800,
-            mw: 'Troncal Vertical',
-            parallelCount: 1,
-            fromName: `Bajada Troncal ${tb.role}`,
-            toName: busPlaques[tIdx].title,
-            empresa: 'SADI',
-            region: 'Nacional',
-            curvature: 0,
-            laneHash: 5,
-            isDimmed
-          };
-          cableGeometries.push({
-            edge: edgeRiser,
-            kvKey: kv,
-            speedBucket: speed,
-            d: dRiser,
-            pts: [
-              [rx, tb.startY],
-              [rx, nextTrunkY]
-            ],
-            minX: rx - 5,
-            minY: tb.startY,
-            maxX: rx + 5,
-            maxY: nextTrunkY,
-            path2D: typeof Path2D !== 'undefined' ? new Path2D(dRiser) : undefined
+          [leftX, rightX].forEach((lx, li) => {
+            const dLat = `M ${lx.toFixed(1)},${firstInY.toFixed(1)} L ${lx.toFixed(1)},${lastInY.toFixed(1)}`;
+            const edgeLat: GridEdgeData = {
+              id: `LAT_IN_${tierDef.id}_${li}`,
+              source: `BUS_${tierDef.id}`,
+              target: `BUS_${tierDef.id}`,
+              kv: inKv,
+              amperes: 600,
+              mw: `Ducto Lateral ${inKv} kV`,
+              parallelCount: 1,
+              fromName: `Ducto Lateral ${inKv} kV`,
+              toName: `Ducto Lateral ${inKv} kV`,
+              empresa: 'SADI',
+              region: 'Nacional',
+              curvature: 0,
+              laneHash: 5,
+              isDimmed
+            };
+            cableGeometries.push({
+              edge: edgeLat,
+              kvKey: inKv,
+              speedBucket: speed,
+              d: dLat,
+              pts: [
+                [lx, firstInY],
+                [lx, lastInY]
+              ],
+              minX: lx - 5,
+              minY: firstInY,
+              maxX: lx + 5,
+              maxY: lastInY,
+              path2D: typeof Path2D !== 'undefined' ? new Path2D(dLat) : undefined
+            });
+            if (isDimmed) {
+              if (!baseDimmedByKv[inKv]) baseDimmedByKv[inKv] = [];
+              baseDimmedByKv[inKv].push(dLat);
+            } else {
+              if (!baseActiveByKv[inKv]) baseActiveByKv[inKv] = [];
+              baseActiveByKv[inKv].push(dLat);
+              const bKey = `${inKv}_${speed}`;
+              if (!animActiveByKvSpeed[bKey]) animActiveByKvSpeed[bKey] = { kv: inKv, speed, paths: [] };
+              animActiveByKvSpeed[bKey].paths.push(dLat);
+            }
           });
+        }
 
-          if (isDimmed) {
-            if (!baseDimmedByKv[kv]) baseDimmedByKv[kv] = [];
-            baseDimmedByKv[kv].push(dRiser);
-          } else {
-            if (!baseActiveByKv[kv]) baseActiveByKv[kv] = [];
-            baseActiveByKv[kv].push(dRiser);
-            const bKey = `${kv}_${speed}`;
-            if (!animActiveByKvSpeed[bKey]) animActiveByKvSpeed[bKey] = { kv, speed, paths: [] };
-            animActiveByKvSpeed[bKey].paths.push(dRiser);
-          }
-        });
-      }
+        if (tierDef.outKv !== null) {
+          const outKv = tierDef.outKv;
+          const isDimmed = filterKv !== null && filterKv !== outKv;
+          const speed = 'med';
+          const firstOutY = subrowYs[0].outBusY;
+          const lastOutY = subrowYs[subrowYs.length - 1].outBusY;
+          const leftX = Math.min(...subrowYs.map((s) => s.minX)) - 8;
+          const rightX = Math.max(...subrowYs.map((s) => s.maxX)) + 8;
 
-      // Risers que traen energía desde la barra troncal superior hacia este piso
-      if (tIdx > 0 && tIdx - 1 < busPlaques.length) {
-        const prevTrunkY = busPlaques[tIdx - 1].y;
-        riserXs.forEach((rx, rIdx) => {
-          const dRiser = `M ${rx},${prevTrunkY} L ${rx},${tb.endY}`;
-          const edgeRiser: GridEdgeData = {
-            id: `RISER_FEED_${tb.role}_${rIdx}`,
-            source: `TRUNK_${tIdx - 1}`,
-            target: `RISER_${tb.role}`,
-            kv,
-            amperes: 800,
-            mw: 'Troncal Vertical',
-            parallelCount: 1,
-            fromName: busPlaques[tIdx - 1].title,
-            toName: `Alimentación ${tb.role}`,
-            empresa: 'SADI',
-            region: 'Nacional',
-            curvature: 0,
-            laneHash: 5,
-            isDimmed
-          };
-          cableGeometries.push({
-            edge: edgeRiser,
-            kvKey: kv,
-            speedBucket: speed,
-            d: dRiser,
-            pts: [
-              [rx, prevTrunkY],
-              [rx, tb.endY]
-            ],
-            minX: rx - 5,
-            minY: prevTrunkY,
-            maxX: rx + 5,
-            maxY: tb.endY,
-            path2D: typeof Path2D !== 'undefined' ? new Path2D(dRiser) : undefined
+          [leftX, rightX].forEach((lx, li) => {
+            const dLat = `M ${lx.toFixed(1)},${firstOutY.toFixed(1)} L ${lx.toFixed(1)},${lastOutY.toFixed(1)}`;
+            const edgeLat: GridEdgeData = {
+              id: `LAT_OUT_${tierDef.id}_${li}`,
+              source: `BUS_${tierDef.id}`,
+              target: `BUS_${tierDef.id}`,
+              kv: outKv,
+              amperes: 600,
+              mw: `Ducto Lateral ${outKv} kV`,
+              parallelCount: 1,
+              fromName: `Ducto Lateral ${outKv} kV`,
+              toName: `Ducto Lateral ${outKv} kV`,
+              empresa: 'SADI',
+              region: 'Nacional',
+              curvature: 0,
+              laneHash: 6,
+              isDimmed
+            };
+            cableGeometries.push({
+              edge: edgeLat,
+              kvKey: outKv,
+              speedBucket: speed,
+              d: dLat,
+              pts: [
+                [lx, firstOutY],
+                [lx, lastOutY]
+              ],
+              minX: lx - 5,
+              minY: firstOutY,
+              maxX: lx + 5,
+              maxY: lastOutY,
+              path2D: typeof Path2D !== 'undefined' ? new Path2D(dLat) : undefined
+            });
+            if (isDimmed) {
+              if (!baseDimmedByKv[outKv]) baseDimmedByKv[outKv] = [];
+              baseDimmedByKv[outKv].push(dLat);
+            } else {
+              if (!baseActiveByKv[outKv]) baseActiveByKv[outKv] = [];
+              baseActiveByKv[outKv].push(dLat);
+              const bKey = `${outKv}_${speed}`;
+              if (!animActiveByKvSpeed[bKey]) animActiveByKvSpeed[bKey] = { kv: outKv, speed, paths: [] };
+              animActiveByKvSpeed[bKey].paths.push(dLat);
+            }
           });
-
-          if (isDimmed) {
-            if (!baseDimmedByKv[kv]) baseDimmedByKv[kv] = [];
-            baseDimmedByKv[kv].push(dRiser);
-          } else {
-            if (!baseActiveByKv[kv]) baseActiveByKv[kv] = [];
-            baseActiveByKv[kv].push(dRiser);
-            const bKey = `${kv}_${speed}`;
-            if (!animActiveByKvSpeed[bKey]) animActiveByKvSpeed[bKey] = { kv, speed, paths: [] };
-            animActiveByKvSpeed[bKey].paths.push(dRiser);
-          }
-        });
+        }
       }
-    });
 
-    // 3. Trazado de las GRANDES BARRAS TRONCALES (Trunk Busbars)
-    busPlaques.forEach((bp, bIdx) => {
-      const isDimmed = filterKv !== null && filterKv !== bp.kv;
-      const speed = 'fast';
-      const dTrunk = `M 40,${bp.y.toFixed(1)} L ${(diagramW - 40).toFixed(1)},${bp.y.toFixed(1)}`;
-      const edgeTrunk: GridEdgeData = {
-        id: `TRUNK_BUS_${bIdx}`,
-        source: `TRUNK_${bp.kv}`,
-        target: `TRUNK_${bp.kv}`,
-        kv: bp.kv,
-        amperes: 1200,
-        mw: bp.title,
-        parallelCount: 1,
-        fromName: bp.title,
-        toName: bp.title,
-        empresa: 'CAMMESA',
-        region: 'SADI',
-        curvature: 0,
-        laneHash: 4,
-        isDimmed
-      };
-      cableGeometries.push({
-        edge: edgeTrunk,
-        kvKey: bp.kv,
-        speedBucket: speed,
-        d: dTrunk,
-        pts: [
-          [40, bp.y],
-          [diagramW - 40, bp.y]
-        ],
-        minX: 40,
-        minY: bp.y - 10,
-        maxX: diagramW - 40,
-        maxY: bp.y + 10,
-        path2D: typeof Path2D !== 'undefined' ? new Path2D(dTrunk) : undefined
-      });
+      currentY -= ROW_GAP;
 
-      if (isDimmed) {
-        if (!baseDimmedByKv[bp.kv]) baseDimmedByKv[bp.kv] = [];
-        baseDimmedByKv[bp.kv].push(dTrunk);
+      // Si corresponde una gran Barra Troncal física a continuación de este piso
+      if (tierDef.busPlaqueAfter) {
+        currentY += 48;
+        const trunkY = currentY + 36;
+        const bp = tierDef.busPlaqueAfter;
+        const cfg = VOLTAGE_CONFIG[bp.kv] || VOLTAGE_CONFIG[132];
+        busPlaques.push({ y: trunkY, title: bp.title, subtitle: bp.subtitle, kv: bp.kv, color: cfg.color });
+
+        const isDimmed = filterKv !== null && filterKv !== bp.kv;
+        const speed = 'fast';
+        const dTrunk = `M 40,${trunkY.toFixed(1)} L ${(diagramW - 40).toFixed(1)},${trunkY.toFixed(1)}`;
+        const edgeTrunk: GridEdgeData = {
+          id: `TRUNK_${bp.kv}_${tierDef.id}`,
+          source: `TRUNK_${bp.kv}`,
+          target: `TRUNK_${bp.kv}`,
+          kv: bp.kv,
+          amperes: 1200,
+          mw: bp.title,
+          parallelCount: 1,
+          fromName: bp.title,
+          toName: bp.title,
+          empresa: 'CAMMESA',
+          region: 'SADI',
+          curvature: 0,
+          laneHash: 7,
+          isDimmed
+        };
+        cableGeometries.push({
+          edge: edgeTrunk,
+          kvKey: bp.kv,
+          speedBucket: speed,
+          d: dTrunk,
+          pts: [
+            [40, trunkY],
+            [diagramW - 40, trunkY]
+          ],
+          minX: 40,
+          minY: trunkY - 10,
+          maxX: diagramW - 40,
+          maxY: trunkY + 10,
+          path2D: typeof Path2D !== 'undefined' ? new Path2D(dTrunk) : undefined
+        });
+
+        if (isDimmed) {
+          if (!baseDimmedByKv[bp.kv]) baseDimmedByKv[bp.kv] = [];
+          baseDimmedByKv[bp.kv].push(dTrunk);
+        } else {
+          if (!baseActiveByKv[bp.kv]) baseActiveByKv[bp.kv] = [];
+          baseActiveByKv[bp.kv].push(dTrunk);
+          const bKey = `${bp.kv}_${speed}`;
+          if (!animActiveByKvSpeed[bKey]) animActiveByKvSpeed[bKey] = { kv: bp.kv, speed, paths: [] };
+          animActiveByKvSpeed[bKey].paths.push(dTrunk);
+        }
+
+        currentY += 120;
       } else {
-        if (!baseActiveByKv[bp.kv]) baseActiveByKv[bp.kv] = [];
-        baseActiveByKv[bp.kv].push(dTrunk);
-        const bKey = `${bp.kv}_${speed}`;
-        if (!animActiveByKvSpeed[bKey]) animActiveByKvSpeed[bKey] = { kv: bp.kv, speed, paths: [] };
-        animActiveByKvSpeed[bKey].paths.push(dTrunk);
+        currentY += 40;
       }
     });
   } else {
@@ -1258,7 +1317,7 @@ function computeLayoutAndBatchedCables(
     const maxCols = 32;
 
     if (!isMap) {
-      const tiers: NodeRole[] = ['GEN', 'ET500', 'ET132', 'DIST', 'COOP'];
+      const tiers: NodeRole[] = ['GEN', 'ET500', 'ET220', 'ET132', 'DIST', 'COOP'];
 
       tiers.forEach((tierRole) => {
         const tierNodes = masterNodes
@@ -2219,7 +2278,7 @@ const FlowSceneInner: React.FC<{
 
         // 4. Borneras de entrada / salida (8x8px)
         const hasInput = n.role !== 'GEN';
-        const hasOutput = n.role !== 'DIST' && n.role !== 'COOP';
+        const hasOutput = n.role !== 'COOP';
         ctx.fillStyle = isDimmed ? '#8A857A' : '#222426';
         ctx.strokeStyle = '#FAF8F3';
         ctx.lineWidth = 1;
