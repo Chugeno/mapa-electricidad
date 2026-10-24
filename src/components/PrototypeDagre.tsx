@@ -310,12 +310,12 @@ function buildStreetAvenueGeometry(
       d: [
         `M ${sx.toFixed(1)},${sy.toFixed(1)}`,
         `L ${(x1 - r1).toFixed(1)},${sy.toFixed(1)}`,
-        `Q ${x1.toFixed(1)},${sy.toFixed(1)} ${(sx + dirY1 * r1).toFixed(1)},${sy.toFixed(1)}`,
+        `Q ${x1.toFixed(1)},${sy.toFixed(1)} ${x1.toFixed(1)},${(sy + dirY1 * r1).toFixed(1)}`,
         `L ${x1.toFixed(1)},${(ys - dirY1 * r2).toFixed(1)}`,
         `Q ${x1.toFixed(1)},${ys.toFixed(1)} ${(x1 + dirX * r2).toFixed(1)},${ys.toFixed(1)}`,
         `L ${(x2 - dirX * r3).toFixed(1)},${ys.toFixed(1)}`,
         `Q ${x2.toFixed(1)},${ys.toFixed(1)} ${x2.toFixed(1)},${(ys + dirY2 * r3).toFixed(1)}`,
-        `L ${x2.toFixed(1)},${(ty - dirArr * r4).toFixed(1)}`,
+        `L ${x2.toFixed(1)},${(ty - dirY2 * r4).toFixed(1)}`,
         `Q ${x2.toFixed(1)},${ty.toFixed(1)} ${(x2 + dirArr * r4).toFixed(1)},${ty.toFixed(1)}`,
         `L ${tx.toFixed(1)},${ty.toFixed(1)}`
       ].join(' '),
@@ -1482,7 +1482,7 @@ function computeLayoutAndBatchedCables(
         const ga = logicalGrid.get(String(a.target));
         const gb = logicalGrid.get(String(b.target));
         if (!ga || !gb) return 0;
-        return isHorizontal ? ga.row - gb.row : ga.col - gb.col;
+        return (ga.col - gb.col) || (ga.row - gb.row);
       });
     }
     for (const list of inByTarget.values()) {
@@ -1490,7 +1490,7 @@ function computeLayoutAndBatchedCables(
         const ga = logicalGrid.get(String(a.source));
         const gb = logicalGrid.get(String(b.source));
         if (!ga || !gb) return 0;
-        return isHorizontal ? ga.row - gb.row : ga.col - gb.col;
+        return (ga.col - gb.col) || (ga.row - gb.row);
       });
     }
 
@@ -1648,7 +1648,7 @@ function computeLayoutAndBatchedCables(
 
       if (isAdjacent) {
         const track = aveAssignments.get(`${e.id}_adj`) || 0;
-        const aveBase = (!isHorizontal ? rowCoords[sGrid.row] : colCoords[sGrid.col]) + BOX_SIZE + 18;
+        const aveBase = rowCoords[sGrid.row] + BOX_SIZE + 18;
         const bend = aveBase + track * MIN_CABLE_PITCH;
         geom = buildStreetAvenueGeometry(sx, sy, tx, ty, isHorizontal, true, bend, 0, 0);
       } else {
@@ -1657,10 +1657,10 @@ function computeLayoutAndBatchedCables(
         const streetTrack = streetAssignments.get(e.id) || 0;
 
         const streetCol = sGrid.col;
-        const sAveBase = (!isHorizontal ? rowCoords[sGrid.row] : colCoords[sGrid.col]) + BOX_SIZE + 18;
+        const sAveBase = rowCoords[sGrid.row] + BOX_SIZE + 18;
         const arrRowIdx = Math.max(0, tGrid.row - 1);
-        const tAveBase = (!isHorizontal ? rowCoords[arrRowIdx] : colCoords[arrRowIdx]) + BOX_SIZE + 18;
-        const streetBase = (!isHorizontal ? colCoords[streetCol] : rowCoords[streetCol]) + BOX_SIZE + 16;
+        const tAveBase = rowCoords[arrRowIdx] + BOX_SIZE + 18;
+        const streetBase = colCoords[streetCol] + BOX_SIZE + 16;
 
         const y1 = sAveBase + depTrack * MIN_CABLE_PITCH;
         const y2 = tAveBase + arrTrack * MIN_CABLE_PITCH;
