@@ -755,12 +755,14 @@ function computeLayoutAndBatchedCables(
     // (en cualquier fila) posee un conductor continuo que entra o sale de ella.
     // Cero "barritas" muertas y cero cables flotantes en el aire.
     // ========================================================================
-    const maxCols = 34;
+    const maxCols = 30;
     const COL_GAP = 26;
     const COL_PITCH = BOX_SIZE + COL_GAP; // 150px
     const ROW_GAP = 54;
     const ROW_PITCH = BOX_SIZE + ROW_GAP; // 178px
-    const diagramW = maxCols * COL_PITCH;
+    const diagramW = 5100;
+
+    const busYMap = new Map<string, number>();
 
     const registerSegment = (
       id: string,
@@ -827,13 +829,14 @@ function computeLayoutAndBatchedCables(
       subtitle: string,
       kv: number
     ) => {
+      busYMap.set(id, y);
       const cfg = VOLTAGE_CONFIG[kv] || VOLTAGE_CONFIG[132];
       busPlaques.push({ y, title, subtitle, kv, color: cfg.color });
       const dTrunk = `M 40,${y.toFixed(1)} L ${(diagramW - 40).toFixed(1)},${y.toFixed(1)}`;
       registerSegment(
         id,
-        `BUS_${kv}`,
-        `BUS_${kv}`,
+        id,
+        id,
         kv,
         1200,
         title,
@@ -845,6 +848,41 @@ function computeLayoutAndBatchedCables(
         ],
         filterKv !== null && filterKv !== kv
       );
+    };
+
+    const connectBuses = (
+      fromBusId: string,
+      toBusId: string,
+      kv: number,
+      label: string,
+      xs: number[]
+    ) => {
+      const fromY = busYMap.get(fromBusId);
+      const toY = busYMap.get(toBusId);
+      if (fromY === undefined || toY === undefined) return;
+
+      const isDimmed = filterKv !== null && filterKv !== kv;
+      const speed: 'fast' | 'med' | 'slow' = kv >= 500 ? 'fast' : kv >= 220 ? 'med' : 'slow';
+
+      xs.forEach((x, idx) => {
+        const d = `M ${x.toFixed(1)},${fromY.toFixed(1)} L ${x.toFixed(1)},${toY.toFixed(1)}`;
+        const pts: [number, number][] = [
+          [x, fromY],
+          [x, toY]
+        ];
+        registerSegment(
+          `TIE_${fromBusId}_${toBusId}_${idx}`,
+          fromBusId,
+          toBusId,
+          kv,
+          2400,
+          label,
+          speed,
+          d,
+          pts,
+          isDimmed
+        );
+      });
     };
 
     // ------------------------------------------------------------------------
@@ -1288,6 +1326,76 @@ function computeLayoutAndBatchedCables(
         currentY += ROW_PITCH;
       }
     }
+
+    // ------------------------------------------------------------------------
+    // INTERCONEXIÓN FÍSICA TRONCAL ENTRE BARRAS SCADA (CORRIENTE CONTINUA SADI)
+    // Conecta las barras colectoras de generación y las barras de salida de
+    // transformación con las barras de alimentación del nivel correspondiente.
+    // Conductores troncales de alta capacidad que discurren por los corredores
+    // laterales protegidos sin cortar ninguna caja de estación.
+    // ------------------------------------------------------------------------
+    // 500 kV: Generación 500 kV -> Barra de Entrada EETT 500 kV (4 ternas troncales)
+    connectBuses(
+      'BUS_GEN_500',
+      'BUS_IN_ET_500',
+      500,
+      'Línea Troncal Extra Alta Tensión 500 kV (Interconexión Nacional)',
+      [80, 120, 4980, 5020]
+    );
+
+    // 220 kV: Salida Reducción 500/220 kV EETT -> Barra Troncal 220 kV
+    connectBuses(
+      'BUS_OUT_ET_500',
+      'BUS_IN_ET_220',
+      220,
+      'Enlace Transformación 500/220 kV hacia Red Troncal',
+      [160, 4940]
+    );
+
+    // 220 kV: Inyección Centrales MEM 220 kV -> Barra Troncal 220 kV
+    connectBuses(
+      'BUS_GEN_220',
+      'BUS_IN_ET_220',
+      220,
+      'Inyección Troncal 220 kV Centrales MEM',
+      [200, 4900]
+    );
+
+    // 132 kV: Salida Reducción 220/132 kV EETT -> Barra Subtransmisión 132 kV
+    connectBuses(
+      'BUS_OUT_ET_220',
+      'BUS_IN_ET_132',
+      132,
+      'Enlace Transformación 220/132 kV hacia Subtransmisión',
+      [160, 4940]
+    );
+
+    // 132 kV: Inyección Centrales Regionales 132 kV -> Barra Subtransmisión 132 kV
+    connectBuses(
+      'BUS_GEN_132',
+      'BUS_IN_ET_132',
+      132,
+      'Inyección Subtransmisión 132 kV Centrales Regionales',
+      [240, 4860]
+    );
+
+    // 33 kV: Salida Reducción 132/33 kV EETT -> Barra Distribución 33 kV
+    connectBuses(
+      'BUS_OUT_ET_132',
+      'BUS_DIST_IN_33',
+      33,
+      'Enlace Transformación 132/33 kV hacia Distribuidoras',
+      [160, 4940]
+    );
+
+    // 33 kV: Inyección Centrales Locales 33 kV -> Barra Distribución 33 kV
+    connectBuses(
+      'BUS_GEN_33',
+      'BUS_DIST_IN_33',
+      33,
+      'Inyección Media Tensión 33 kV Centrales Locales',
+      [280, 4820]
+    );
   } else {
     // ========================================================================
     // MODOS ORIGINALES 100% INTACTOS (PLANO VERTICAL, HORIZONTAL, MAPA)
@@ -1485,11 +1593,6 @@ function computeLayoutAndBatchedCables(
       }
     });
   }
-
-  const cableGeometries: ComputedCableGeometry[] = [];
-  const baseDimmedByKv: Record<number, string[]> = { 500: [], 220: [], 132: [], 33: [], 13.2: [] };
-  const baseActiveByKv: Record<number, string[]> = { 500: [], 220: [], 132: [], 33: [], 13.2: [] };
-  const animActiveByKvSpeed: Record<string, { kv: number; speed: 'fast' | 'med' | 'slow'; paths: string[] }> = {};
 
   masterEdges.forEach((e) => {
     const sPos = positions.get(String(e.source));
