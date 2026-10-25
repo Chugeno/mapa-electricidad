@@ -736,7 +736,7 @@ function computeLayoutAndBatchedCables(
   // POSICIONES PERMANENTES: En modo Plano Unifilar la cuadrícula nacional es FIJA y sagrada.
   // Ninguna estación ni cable se mueve de casillero al filtrar; solo se atenúan los elementos secundarios.
   const positions = new Map<string, { x: number; y: number }>();
-  const busPlaques: { y: number; title: string; subtitle: string; kv: number; color: string }[] = [];
+  const busPlaques: { id: string; y: number; title: string; subtitle: string; kv: number; color: string }[] = [];
 
   const cableGeometries: ComputedCableGeometry[] = [];
   const baseDimmedByKv: Record<number, string[]> = { 500: [], 220: [], 132: [], 33: [], 13.2: [] };
@@ -831,7 +831,7 @@ function computeLayoutAndBatchedCables(
     ) => {
       busYMap.set(id, y);
       const cfg = VOLTAGE_CONFIG[kv] || VOLTAGE_CONFIG[132];
-      busPlaques.push({ y, title, subtitle, kv, color: cfg.color });
+      busPlaques.push({ id, y, title, subtitle, kv, color: cfg.color });
       const dTrunk = `M 40,${y.toFixed(1)} L ${(diagramW - 40).toFixed(1)},${y.toFixed(1)}`;
       registerSegment(
         id,
@@ -1332,15 +1332,15 @@ function computeLayoutAndBatchedCables(
     // Conecta las barras colectoras de generación y las barras de salida de
     // transformación con las barras de alimentación del nivel correspondiente.
     // Conductores troncales de alta capacidad que discurren por los corredores
-    // laterales protegidos sin cortar ninguna caja de estación.
+    // protegidos entre columnas de estaciones (calles a 90°).
     // ------------------------------------------------------------------------
-    // 500 kV: Generación 500 kV -> Barra de Entrada EETT 500 kV (4 ternas troncales)
+    // 500 kV: Generación 500 kV -> Barra de Entrada EETT 500 kV (ternas troncales distribuidas)
     connectBuses(
       'BUS_GEN_500',
       'BUS_IN_ET_500',
       500,
       'Línea Troncal Extra Alta Tensión 500 kV (Interconexión Nacional)',
-      [80, 120, 4980, 5020]
+      [100, 450, 750, 1050, 1350, 1650, 1950, 2250, 2550, 2850, 3150, 3450, 3750, 4050, 4350, 4650, 5000]
     );
 
     // 220 kV: Salida Reducción 500/220 kV EETT -> Barra Troncal 220 kV
@@ -1349,7 +1349,7 @@ function computeLayoutAndBatchedCables(
       'BUS_IN_ET_220',
       220,
       'Enlace Transformación 500/220 kV hacia Red Troncal',
-      [160, 4940]
+      [140, 600, 1200, 1800, 2400, 3000, 3600, 4200, 4960]
     );
 
     // 220 kV: Inyección Centrales MEM 220 kV -> Barra Troncal 220 kV
@@ -1358,7 +1358,7 @@ function computeLayoutAndBatchedCables(
       'BUS_IN_ET_220',
       220,
       'Inyección Troncal 220 kV Centrales MEM',
-      [200, 4900]
+      [180, 900, 1500, 2100, 2700, 3300, 3900, 4500, 4920]
     );
 
     // 132 kV: Salida Reducción 220/132 kV EETT -> Barra Subtransmisión 132 kV
@@ -1367,7 +1367,7 @@ function computeLayoutAndBatchedCables(
       'BUS_IN_ET_132',
       132,
       'Enlace Transformación 220/132 kV hacia Subtransmisión',
-      [160, 4940]
+      [140, 450, 900, 1350, 1800, 2250, 2700, 3150, 3600, 4050, 4500, 4960]
     );
 
     // 132 kV: Inyección Centrales Regionales 132 kV -> Barra Subtransmisión 132 kV
@@ -1376,7 +1376,7 @@ function computeLayoutAndBatchedCables(
       'BUS_IN_ET_132',
       132,
       'Inyección Subtransmisión 132 kV Centrales Regionales',
-      [240, 4860]
+      [180, 600, 1050, 1500, 1950, 2400, 2850, 3300, 3750, 4200, 4650, 4920]
     );
 
     // 33 kV: Salida Reducción 132/33 kV EETT -> Barra Distribución 33 kV
@@ -1385,7 +1385,7 @@ function computeLayoutAndBatchedCables(
       'BUS_DIST_IN_33',
       33,
       'Enlace Transformación 132/33 kV hacia Distribuidoras',
-      [160, 4940]
+      [140, 600, 1200, 1800, 2400, 3000, 3600, 4200, 4960]
     );
 
     // 33 kV: Inyección Centrales Locales 33 kV -> Barra Distribución 33 kV
@@ -1394,7 +1394,7 @@ function computeLayoutAndBatchedCables(
       'BUS_DIST_IN_33',
       33,
       'Inyección Media Tensión 33 kV Centrales Locales',
-      [280, 4820]
+      [180, 900, 1500, 2100, 2700, 3300, 3900, 4500, 4920]
     );
   } else {
     // ========================================================================
@@ -1874,9 +1874,11 @@ const FlowSceneInner: React.FC<{
   searchQuery: string;
   showFullWfs: boolean;
   animateFlow: boolean;
+  selectedEdge: GridEdgeData | null;
   onToggleFullWfs: () => void;
   onSelectNode: (d: GridNodeData) => void;
   onSelectEdge: (d: GridEdgeData) => void;
+  onClearSelectedEdge: () => void;
   onCountsChange: (nodeCount: number, edgeCount: number) => void;
 }> = ({
   layoutMode,
@@ -1889,9 +1891,11 @@ const FlowSceneInner: React.FC<{
   searchQuery,
   showFullWfs,
   animateFlow,
+  selectedEdge,
   onToggleFullWfs,
   onSelectNode,
   onSelectEdge,
+  onClearSelectedEdge,
   onCountsChange
 }) => {
   const { fitView, screenToFlowPosition, getViewport } = useReactFlow();
@@ -1995,6 +1999,39 @@ const FlowSceneInner: React.FC<{
       });
     }
 
+    if (selectedEdge) {
+      const matchCg =
+        cableGeometries.find((cg) => cg.edge.id === selectedEdge.id) ||
+        cableGeometries.find(
+          (cg) =>
+            (cg.edge.source === selectedEdge.source && cg.edge.target === selectedEdge.target) ||
+            (cg.edge.source === selectedEdge.target && cg.edge.target === selectedEdge.source)
+        );
+
+      if (matchCg) {
+        const cfg = VOLTAGE_CONFIG[matchCg.kvKey] || VOLTAGE_CONFIG[132];
+        const p2d = matchCg.path2D || new Path2D(matchCg.d);
+        const dashLen = Math.max(8, Math.round(cfg.width * 3.1));
+        const gapLen = Math.max(6, Math.round(cfg.width * 2.3));
+        return {
+          provincePath2D: null,
+          wfsPaths2D: [],
+          dimmedBase2D: [],
+          activeBase2D: [{ kv: matchCg.kvKey, cfg, path: p2d }],
+          activeAnim2D: [
+            {
+              key: `${matchCg.kvKey}_${matchCg.speedBucket}`,
+              kv: matchCg.kvKey,
+              speed: matchCg.speedBucket,
+              cfg,
+              dash: [dashLen, gapLen],
+              path: p2d
+            }
+          ]
+        };
+      }
+    }
+
     const dimmedBase2D = batchedDimmedBase.map((b) => ({
       kv: b.kv,
       cfg: VOLTAGE_CONFIG[b.kv] || VOLTAGE_CONFIG[132],
@@ -2022,7 +2059,17 @@ const FlowSceneInner: React.FC<{
     });
 
     return { provincePath2D, wfsPaths2D, dimmedBase2D, activeBase2D, activeAnim2D };
-  }, [layoutMode, provinces, showFullWfs, topology, batchedDimmedBase, batchedActiveBase, batchedActiveAnim]);
+  }, [
+    layoutMode,
+    provinces,
+    showFullWfs,
+    topology,
+    batchedDimmedBase,
+    batchedActiveBase,
+    batchedActiveAnim,
+    selectedEdge,
+    cableGeometries
+  ]);
 
   // Motor unificado de pintado en Canvas 2D:
   // Dibuja Provincias + Cables + Estaciones recortando estrictamente al área visible en pantalla (Viewport Culling)
@@ -2082,6 +2129,14 @@ const FlowSceneInner: React.FC<{
     if (isBuses && busPlaques && busPlaques.length > 0) {
       for (let i = 0; i < busPlaques.length; i++) {
         const bp = busPlaques[i];
+        if (selectedEdge) {
+          const isTargetBus =
+            selectedEdge.target === bp.id ||
+            selectedEdge.source === bp.id ||
+            selectedEdge.target.includes(bp.kv.toString()) ||
+            selectedEdge.source.includes(bp.kv.toString());
+          if (!isTargetBus) continue;
+        }
         if (bp.y < viewMinY - 140 || bp.y > viewMaxY + 140) continue;
 
         const isDimmed = filterKv !== null && filterKv !== bp.kv;
@@ -2154,8 +2209,19 @@ const FlowSceneInner: React.FC<{
       }
     }
 
-    // 2c. Flujo dinámico animado (solo si animateFlow está activo)
-    if (animateFlow && compiledPaths.activeAnim2D.length > 0) {
+    // 2c. Flujo dinámico animado (solo si animateFlow está activo o si hay un vínculo seleccionado)
+    if (selectedEdge) {
+      if (compiledPaths.activeAnim2D.length > 0) {
+        const a = compiledPaths.activeAnim2D[0];
+        ctx.globalAlpha = 1.0;
+        ctx.strokeStyle = a.cfg.color;
+        ctx.lineWidth = (a.cfg.width + 1.2) * (isMap ? 1.2 : 1.0);
+        ctx.setLineDash(a.dash);
+        const speedPx = SPEED_PX_PER_SEC[a.speed];
+        ctx.lineDashOffset = -(dashPhaseRef.current * speedPx) % 240;
+        ctx.stroke(a.path);
+      }
+    } else if (animateFlow && compiledPaths.activeAnim2D.length > 0) {
       if (vp.zoom < 0.65) {
         // En vista macro o zoom medio: trazado animado agrupado por tensión y velocidad (máx 15 llamadas de GPU en total)
         ctx.globalAlpha = 0.96;
@@ -2194,7 +2260,7 @@ const FlowSceneInner: React.FC<{
     ctx.setLineDash([]);
     const iconPaths = getIconPaths();
 
-    const drawStationNode = (n: GridNodeData, isDimmed: boolean) => {
+    const drawStationNode = (n: GridNodeData, isDimmed: boolean, forceDetail = false) => {
       // En el Mapa: tamaño calibrado (-20% adicional = 40px base, icono 22px).
       // El icono y el rectángulo de info tienen EXACTAMENTE el mismo alto (boxH = size)
       // y la tipografía escala linealmente sin pisos artificiales para que nunca desborde.
@@ -2207,10 +2273,12 @@ const FlowSceneInner: React.FC<{
       const nodeY = cy - halfSize;
 
       if (
-        nodeX + size < viewMinX ||
-        nodeX > viewMaxX ||
-        nodeY + size < viewMinY ||
-        nodeY > viewMaxY
+        !forceDetail && (
+          nodeX + size < viewMinX ||
+          nodeX > viewMaxX ||
+          nodeY + size < viewMinY ||
+          nodeY > viewMaxY
+        )
       ) {
         return;
       }
@@ -2248,7 +2316,7 @@ const FlowSceneInner: React.FC<{
 
         // Rectángulo de información: EXACTAMENTE EL MISMO ALTO que el icono (boxH = size)
         // y tipografía 100% proporcional sin límites rígidos para que entre perfecto al hacer zoom.
-        if (showDetail) {
+        if (showDetail || forceDetail) {
           const isLeft = n.labelSide === 'left';
           const subText = `${n.kvText} · ${n.powerMw} · ${formatMilesEnteros(n.amperes)} A`;
 
@@ -2312,7 +2380,7 @@ const FlowSceneInner: React.FC<{
       ctx.fillStyle = isDimmed ? '#A59F91' : vCfg.color;
       ctx.fillRect(n.x, n.y, BOX_SIZE, 5);
 
-      if (!showDetail) {
+      if (!showDetail && !forceDetail) {
         // VISTA MACRO LEJANA (< 0.25x): Cuadrado limpio y dot de tecnología (ultra liviano para 60fps constantes)
         const ibX = n.x + (BOX_SIZE - 66) / 2;
         const ibY = n.y + (BOX_SIZE - 66) / 2 + 2;
@@ -2399,7 +2467,7 @@ const FlowSceneInner: React.FC<{
     };
 
     // PASO 1: DIBUJAR PRIMERO LAS ESTACIONES ATENUADAS (FONDO)
-    if (dimmedNodes.length > 0) {
+    if (!selectedEdge && dimmedNodes.length > 0) {
       ctx.globalAlpha = 0.22;
       for (let i = 0; i < dimmedNodes.length; i++) {
         drawStationNode(dimmedNodes[i], true);
@@ -2407,9 +2475,20 @@ const FlowSceneInner: React.FC<{
     }
 
     // PASO 2: DIBUJAR ENCIMA LAS ESTACIONES ACTIVAS / RESALTADAS (FRENTE)
-    ctx.globalAlpha = 1.0;
-    for (let i = 0; i < activeNodes.length; i++) {
-      drawStationNode(activeNodes[i], false);
+    if (!selectedEdge) {
+      ctx.globalAlpha = 1.0;
+      for (let i = 0; i < activeNodes.length; i++) {
+        drawStationNode(activeNodes[i], false);
+      }
+    } else {
+      // MODO AISLAMIENTO DE VÍNCULO: Se oculta TODO el resto y solo aparecen las dos cosas que conecta ese cable
+      ctx.globalAlpha = 1.0;
+      for (let i = 0; i < positionedNodes.length; i++) {
+        const n = positionedNodes[i];
+        if (n.uid === selectedEdge.source || n.uid === selectedEdge.target) {
+          drawStationNode(n, false, true);
+        }
+      }
     }
   }, [
     compiledPaths,
@@ -2426,7 +2505,8 @@ const FlowSceneInner: React.FC<{
     filterTech,
     filterRole,
     searchQuery,
-    animateFlow
+    animateFlow,
+    selectedEdge
   ]);
 
   // Bucle de animación de corriente (pausado automáticamente mientras el dedo arrastra o si el usuario desactivó el flujo)
@@ -2596,9 +2676,20 @@ const FlowSceneInner: React.FC<{
 
       if (bestEdge) {
         onSelectEdge(bestEdge);
+      } else if (selectedEdge) {
+        onClearSelectedEdge();
       }
     },
-    [positionedNodes, cableGeometries, layoutMode, screenToFlowPosition, onSelectNode, onSelectEdge]
+    [
+      positionedNodes,
+      cableGeometries,
+      layoutMode,
+      screenToFlowPosition,
+      onSelectNode,
+      onSelectEdge,
+      selectedEdge,
+      onClearSelectedEdge
+    ]
   );
 
   return (
@@ -2703,6 +2794,17 @@ export const PrototypeDagre: React.FC = () => {
     return () => clearInterval(timer);
   }, []);
 
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setSelectedNode(null);
+        setSelectedEdge(null);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
   const handleSelectNode = useCallback((nodeData: GridNodeData) => {
     setSelectedEdge(null);
     setSelectedNode(nodeData);
@@ -2798,7 +2900,10 @@ export const PrototypeDagre: React.FC = () => {
 
         <div style={{ display: 'flex', border: '1.5px solid #222426', backgroundColor: '#FAF8F3' }}>
           <button
-            onClick={() => setLayoutMode('DAGRE_TB')}
+            onClick={() => {
+              closeModal();
+              setLayoutMode('DAGRE_TB');
+            }}
             style={{
               fontFamily: '"IBM Plex Mono", monospace',
               fontSize: '11px',
@@ -2814,7 +2919,10 @@ export const PrototypeDagre: React.FC = () => {
             🌳 PLANO VERTICAL
           </button>
           <button
-            onClick={() => setLayoutMode('BUSES')}
+            onClick={() => {
+              closeModal();
+              setLayoutMode('BUSES');
+            }}
             style={{
               fontFamily: '"IBM Plex Mono", monospace',
               fontSize: '11px',
@@ -2830,7 +2938,10 @@ export const PrototypeDagre: React.FC = () => {
             ⚡ PLANO BARRAS
           </button>
           <button
-            onClick={() => setLayoutMode('DAGRE_LR')}
+            onClick={() => {
+              closeModal();
+              setLayoutMode('DAGRE_LR');
+            }}
             style={{
               fontFamily: '"IBM Plex Mono", monospace',
               fontSize: '11px',
@@ -2846,7 +2957,10 @@ export const PrototypeDagre: React.FC = () => {
             📐 PLANO HORIZONTAL
           </button>
           <button
-            onClick={() => setLayoutMode('MAP')}
+            onClick={() => {
+              closeModal();
+              setLayoutMode('MAP');
+            }}
             style={{
               fontFamily: '"IBM Plex Mono", monospace',
               fontSize: '11px',
@@ -3137,12 +3251,178 @@ export const PrototypeDagre: React.FC = () => {
             searchQuery={searchQuery}
             showFullWfs={showFullWfs}
             animateFlow={animateFlow}
+            selectedEdge={selectedEdge}
             onToggleFullWfs={() => setShowFullWfs((v) => !v)}
             onSelectNode={handleSelectNode}
             onSelectEdge={handleSelectEdge}
+            onClearSelectedEdge={() => setSelectedEdge(null)}
             onCountsChange={handleCountsChange}
           />
         </ReactFlowProvider>
+
+        {/* TARJETA TÉCNICA FLOTANTE CUANDO SE SELECCIONA UN VÍNCULO (SIN BACKDROP BLOQUEANTE) */}
+        {selectedEdge && (
+          <aside
+            style={{
+              position: 'absolute',
+              top: 14,
+              right: 14,
+              width: '380px',
+              maxWidth: 'calc(100vw - 28px)',
+              backgroundColor: '#FAF8F3',
+              border: '2px solid #222426',
+              boxShadow: '0 8px 24px rgba(0,0,0,0.18)',
+              zIndex: 1000,
+              display: 'flex',
+              flexDirection: 'column',
+              fontFamily: '"IBM Plex Sans", sans-serif'
+            }}
+          >
+            {/* Cabecera */}
+            <div
+              style={{
+                backgroundColor: '#222426',
+                color: '#FAF8F3',
+                padding: '8px 12px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '8px'
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span
+                  style={{
+                    backgroundColor: VOLTAGE_CONFIG[normalizeKvKey(selectedEdge.kv)]?.color || '#2A5C8A',
+                    color: '#FFF',
+                    fontSize: '11px',
+                    fontWeight: 800,
+                    padding: '2px 7px',
+                    fontFamily: '"IBM Plex Mono", monospace'
+                  }}
+                >
+                  {VOLTAGE_CONFIG[normalizeKvKey(selectedEdge.kv)]?.displayKv || `${selectedEdge.kv} kV`}
+                </span>
+                <span style={{ fontSize: '11.5px', fontWeight: 700, letterSpacing: '0.04em' }}>
+                  VÍNCULO AISLADO
+                </span>
+              </div>
+              <button
+                onClick={() => setSelectedEdge(null)}
+                title="Volver a la vista total (Esc)"
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: '#FAF8F3',
+                  fontSize: '18px',
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                  padding: '0 4px',
+                  lineHeight: 1
+                }}
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Cuerpo */}
+            <div style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              <div
+                style={{
+                  backgroundColor: '#F3EFE6',
+                  border: '1px solid #D6D0C4',
+                  padding: '8px 10px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '6px'
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <span style={{ fontSize: '10px', fontWeight: 700, color: '#68655E', width: '56px' }}>ORIGEN:</span>
+                  <span style={{ fontSize: '12px', fontWeight: 700, color: '#222426' }}>{selectedEdge.fromName}</span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <span style={{ fontSize: '10px', fontWeight: 700, color: '#68655E', width: '56px' }}>DESTINO:</span>
+                  <span style={{ fontSize: '12px', fontWeight: 700, color: '#222426' }}>{selectedEdge.toName}</span>
+                </div>
+              </div>
+
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: '1fr 1fr',
+                  gap: '6px',
+                  fontFamily: '"IBM Plex Mono", monospace',
+                  fontSize: '11px'
+                }}
+              >
+                <div style={{ backgroundColor: '#FAF8F3', border: '1px solid #E2DCD2', padding: '6px 8px' }}>
+                  <div style={{ fontSize: '9px', color: '#68655E', fontWeight: 600 }}>CORRIENTE EN LÍNEA</div>
+                  <div style={{ fontSize: '13px', fontWeight: 700, color: '#222426' }}>
+                    {formatMilesEnteros(selectedEdge.amperes)} A
+                  </div>
+                </div>
+                <div style={{ backgroundColor: '#FAF8F3', border: '1px solid #E2DCD2', padding: '6px 8px' }}>
+                  <div style={{ fontSize: '9px', color: '#68655E', fontWeight: 600 }}>POTENCIA EST.</div>
+                  <div style={{ fontSize: '13px', fontWeight: 700, color: '#222426' }}>
+                    {selectedEdge.mw || '—'}
+                  </div>
+                </div>
+                <div style={{ backgroundColor: '#FAF8F3', border: '1px solid #E2DCD2', padding: '6px 8px' }}>
+                  <div style={{ fontSize: '9px', color: '#68655E', fontWeight: 600 }}>TERNADO</div>
+                  <div style={{ fontSize: '12px', fontWeight: 700, color: '#222426' }}>
+                    {selectedEdge.parallelCount > 1
+                      ? `${selectedEdge.parallelCount} ternas paralelas`
+                      : '1 terna simple'}
+                  </div>
+                </div>
+                <div style={{ backgroundColor: '#FAF8F3', border: '1px solid #E2DCD2', padding: '6px 8px' }}>
+                  <div style={{ fontSize: '9px', color: '#68655E', fontWeight: 600 }}>REGIÓN ELÉCTRICA</div>
+                  <div style={{ fontSize: '13px', fontWeight: 700, color: '#222426' }}>
+                    {selectedEdge.region || 'SADI'}
+                  </div>
+                </div>
+              </div>
+
+              {selectedEdge.empresa && (
+                <div
+                  style={{
+                    fontSize: '10px',
+                    color: '#68655E',
+                    borderTop: '1px solid #E2DCD2',
+                    paddingTop: '6px',
+                    display: 'flex',
+                    justifyContent: 'space-between'
+                  }}
+                >
+                  <span style={{ fontWeight: 600 }}>TRANSPORTISTA:</span>
+                  <span style={{ fontWeight: 700, color: '#222426' }}>{selectedEdge.empresa}</span>
+                </div>
+              )}
+
+              <button
+                onClick={() => setSelectedEdge(null)}
+                style={{
+                  marginTop: '4px',
+                  backgroundColor: '#222426',
+                  color: '#FAF8F3',
+                  border: 'none',
+                  padding: '8px 12px',
+                  fontSize: '11px',
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '6px',
+                  fontFamily: '"IBM Plex Mono", monospace'
+                }}
+              >
+                <span>✕</span> VOLVER A LA VISTA TOTAL (ESC)
+              </button>
+            </div>
+          </aside>
+        )}
       </div>
 
       {/* BARRA INFERIOR DE TELEMETRÍA REGIONAL CAMMESA */}
@@ -3233,8 +3513,8 @@ export const PrototypeDagre: React.FC = () => {
         </footer>
       )}
 
-      {/* MODAL FIJO EN PANTALLA INDEPENDIENTE DEL ZOOM */}
-      {(selectedNode || selectedEdge) && (
+      {/* MODAL FIJO EN PANTALLA INDEPENDIENTE DEL ZOOM (SÓLO PARA ESTACIONES) */}
+      {selectedNode && (
         <div
           onClick={closeModal}
           style={{
@@ -3283,9 +3563,7 @@ export const PrototypeDagre: React.FC = () => {
                   textTransform: 'uppercase'
                 }}
               >
-                {selectedNode
-                  ? selectedNode.typeName
-                  : `VÍNCULO ${VOLTAGE_CONFIG[normalizeKvKey(selectedEdge?.kv || 132)]?.displayKv}`}
+                {selectedNode.typeName}
               </span>
               <button
                 onClick={closeModal}
@@ -3307,116 +3585,57 @@ export const PrototypeDagre: React.FC = () => {
             </div>
 
             <div style={{ padding: '16px', overflowY: 'auto' }}>
-              {selectedNode && (
-                <>
-                  <h3 style={{ fontSize: '18px', fontWeight: 700, color: '#222426' }}>
-                    {selectedNode.label}
-                  </h3>
-                  <div
-                    style={{
-                      fontFamily: '"IBM Plex Mono", monospace',
-                      fontSize: '11px',
-                      color: '#68655E',
-                      marginTop: '2px',
-                      marginBottom: '14px'
-                    }}
-                  >
-                    {selectedNode.code} · {selectedNode.provincia.toUpperCase()} ({selectedNode.region})
-                  </div>
+              <h3 style={{ fontSize: '18px', fontWeight: 700, color: '#222426' }}>
+                {selectedNode.label}
+              </h3>
+              <div
+                style={{
+                  fontFamily: '"IBM Plex Mono", monospace',
+                  fontSize: '11px',
+                  color: '#68655E',
+                  marginTop: '2px',
+                  marginBottom: '14px'
+                }}
+              >
+                {selectedNode.code} · {selectedNode.provincia.toUpperCase()} ({selectedNode.region})
+              </div>
 
-                  <div
-                    style={{
-                      display: 'grid',
-                      gridTemplateColumns: '1fr 1fr',
-                      gap: '8px',
-                      fontFamily: '"IBM Plex Mono", monospace'
-                    }}
-                  >
-                    <div style={{ backgroundColor: '#F3EFE6', border: '1px solid #C8C2B4', padding: '8px 10px' }}>
-                      <span style={{ fontSize: '9.5px', color: '#68655E', display: 'block' }}>
-                        {selectedNode.role === 'GEN'
-                          ? 'POTENCIA INSTALADA'
-                          : selectedNode.role === 'DIST' || selectedNode.role === 'COOP'
-                          ? 'DEMANDA LOCAL ESTIMADA'
-                          : 'POTENCIA DE TRANSFORMACIÓN'}
-                      </span>
-                      <strong style={{ fontSize: '14px', color: '#222426' }}>{selectedNode.powerMw}</strong>
-                    </div>
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: '1fr 1fr',
+                  gap: '8px',
+                  fontFamily: '"IBM Plex Mono", monospace'
+                }}
+              >
+                <div style={{ backgroundColor: '#F3EFE6', border: '1px solid #C8C2B4', padding: '8px 10px' }}>
+                  <span style={{ fontSize: '9.5px', color: '#68655E', display: 'block' }}>
+                    {selectedNode.role === 'GEN'
+                      ? 'POTENCIA INSTALADA'
+                      : selectedNode.role === 'DIST' || selectedNode.role === 'COOP'
+                      ? 'DEMANDA LOCAL ESTIMADA'
+                      : 'POTENCIA DE TRANSFORMACIÓN'}
+                  </span>
+                  <strong style={{ fontSize: '14px', color: '#222426' }}>{selectedNode.powerMw}</strong>
+                </div>
 
-                    <div style={{ backgroundColor: '#F3EFE6', border: '1px solid #C8C2B4', padding: '8px 10px' }}>
-                      <span style={{ fontSize: '9.5px', color: '#68655E', display: 'block' }}>CORRIENTE EN VIVO</span>
-                      <strong style={{ fontSize: '14px', color: '#222426' }}>
-                        {formatMilesEnteros(selectedNode.amperes)} A
-                      </strong>
-                    </div>
+                <div style={{ backgroundColor: '#F3EFE6', border: '1px solid #C8C2B4', padding: '8px 10px' }}>
+                  <span style={{ fontSize: '9.5px', color: '#68655E', display: 'block' }}>CORRIENTE EN VIVO</span>
+                  <strong style={{ fontSize: '14px', color: '#222426' }}>
+                    {formatMilesEnteros(selectedNode.amperes)} A
+                  </strong>
+                </div>
 
-                    <div style={{ backgroundColor: '#F3EFE6', border: '1px solid #C8C2B4', padding: '8px 10px' }}>
-                      <span style={{ fontSize: '9.5px', color: '#68655E', display: 'block' }}>TENSIÓN NOMINAL</span>
-                      <strong style={{ fontSize: '14px', color: '#222426' }}>{selectedNode.kvText}</strong>
-                    </div>
+                <div style={{ backgroundColor: '#F3EFE6', border: '1px solid #C8C2B4', padding: '8px 10px' }}>
+                  <span style={{ fontSize: '9.5px', color: '#68655E', display: 'block' }}>TENSIÓN NOMINAL</span>
+                  <strong style={{ fontSize: '14px', color: '#222426' }}>{selectedNode.kvText}</strong>
+                </div>
 
-                    <div style={{ backgroundColor: '#F3EFE6', border: '1px solid #C8C2B4', padding: '8px 10px' }}>
-                      <span style={{ fontSize: '9.5px', color: '#68655E', display: 'block' }}>AGENTE / EMPRESA</span>
-                      <strong style={{ fontSize: '12px', color: '#222426' }}>{selectedNode.operator}</strong>
-                    </div>
-                  </div>
-                </>
-              )}
-
-              {selectedEdge && (
-                <>
-                  <h3 style={{ fontSize: '16px', fontWeight: 700, color: '#222426' }}>
-                    {selectedEdge.fromName} ➔ {selectedEdge.toName}
-                  </h3>
-                  <div
-                    style={{
-                      fontFamily: '"IBM Plex Mono", monospace',
-                      fontSize: '11px',
-                      color: '#68655E',
-                      marginTop: '3px',
-                      marginBottom: '14px'
-                    }}
-                  >
-                    {VOLTAGE_CONFIG[normalizeKvKey(selectedEdge.kv)]?.label}
-                  </div>
-
-                  <div
-                    style={{
-                      display: 'grid',
-                      gridTemplateColumns: '1fr 1fr',
-                      gap: '8px',
-                      fontFamily: '"IBM Plex Mono", monospace'
-                    }}
-                  >
-                    <div style={{ backgroundColor: '#F3EFE6', border: '1px solid #C8C2B4', padding: '8px 10px' }}>
-                      <span style={{ fontSize: '9.5px', color: '#68655E', display: 'block' }}>CORRIENTE EN LÍNEA</span>
-                      <strong style={{ fontSize: '14px', color: '#222426' }}>
-                        {formatMilesEnteros(selectedEdge.amperes)} A
-                      </strong>
-                    </div>
-                    <div style={{ backgroundColor: '#F3EFE6', border: '1px solid #C8C2B4', padding: '8px 10px' }}>
-                      <span style={{ fontSize: '9.5px', color: '#68655E', display: 'block' }}>TERNADO / PARALELAS</span>
-                      <strong style={{ fontSize: '14px', color: '#222426' }}>
-                        {selectedEdge.parallelCount > 1
-                          ? `${selectedEdge.parallelCount} líneas unificadas`
-                          : '1 línea simple'}
-                      </strong>
-                    </div>
-                    <div style={{ backgroundColor: '#F3EFE6', border: '1px solid #C8C2B4', padding: '8px 10px' }}>
-                      <span style={{ fontSize: '9.5px', color: '#68655E', display: 'block' }}>TENSIÓN NOMINAL</span>
-                      <strong style={{ fontSize: '13px', color: '#222426' }}>
-                        {VOLTAGE_CONFIG[normalizeKvKey(selectedEdge.kv)]?.displayKv}
-                      </strong>
-                    </div>
-                    <div style={{ backgroundColor: '#F3EFE6', border: '1px solid #C8C2B4', padding: '8px 10px' }}>
-                      <span style={{ fontSize: '9.5px', color: '#68655E', display: 'block' }}>OPERADOR / REGIÓN</span>
-                      <strong style={{ fontSize: '12px', color: '#222426' }}>
-                        {selectedEdge.empresa} ({selectedEdge.region})
-                      </strong>
-                    </div>
-                  </div>
-                </>
-              )}
+                <div style={{ backgroundColor: '#F3EFE6', border: '1px solid #C8C2B4', padding: '8px 10px' }}>
+                  <span style={{ fontSize: '9.5px', color: '#68655E', display: 'block' }}>AGENTE / EMPRESA</span>
+                  <strong style={{ fontSize: '12px', color: '#222426' }}>{selectedNode.operator}</strong>
+                </div>
+              </div>
             </div>
 
             <div style={{ padding: '10px 14px', backgroundColor: '#EAE4D7', borderTop: '1px solid #C8C2B4' }}>
