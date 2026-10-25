@@ -1905,6 +1905,15 @@ const FlowSceneInner: React.FC<{
   const isPanningRef = useRef<boolean>(false);
   const panTimerRef = useRef<number | null>(null);
   const dashPhaseRef = useRef<number>(0);
+  const isolationCenterRef = useRef<{ x: number; y: number } | null>(null);
+  const isolationScaleRef = useRef<number>(1.0);
+
+  useEffect(() => {
+    if (!selectedEdge) {
+      isolationCenterRef.current = null;
+      isolationScaleRef.current = 1.0;
+    }
+  }, [selectedEdge]);
 
   const provinces = topology?.provinces || [];
   const { allNodes, allEdges } = useMemo(() => buildMasterDataset(topology), [topology]);
@@ -2000,36 +2009,13 @@ const FlowSceneInner: React.FC<{
     }
 
     if (selectedEdge) {
-      const matchCg =
-        cableGeometries.find((cg) => cg.edge.id === selectedEdge.id) ||
-        cableGeometries.find(
-          (cg) =>
-            (cg.edge.source === selectedEdge.source && cg.edge.target === selectedEdge.target) ||
-            (cg.edge.source === selectedEdge.target && cg.edge.target === selectedEdge.source)
-        );
-
-      if (matchCg) {
-        const cfg = VOLTAGE_CONFIG[matchCg.kvKey] || VOLTAGE_CONFIG[132];
-        const p2d = matchCg.path2D || new Path2D(matchCg.d);
-        const dashLen = Math.max(8, Math.round(cfg.width * 3.1));
-        const gapLen = Math.max(6, Math.round(cfg.width * 2.3));
-        return {
-          provincePath2D: null,
-          wfsPaths2D: [],
-          dimmedBase2D: [],
-          activeBase2D: [{ kv: matchCg.kvKey, cfg, path: p2d }],
-          activeAnim2D: [
-            {
-              key: `${matchCg.kvKey}_${matchCg.speedBucket}`,
-              kv: matchCg.kvKey,
-              speed: matchCg.speedBucket,
-              cfg,
-              dash: [dashLen, gapLen],
-              path: p2d
-            }
-          ]
-        };
-      }
+      return {
+        provincePath2D: null,
+        wfsPaths2D: [],
+        dimmedBase2D: [],
+        activeBase2D: [],
+        activeAnim2D: []
+      };
     }
 
     const dimmedBase2D = batchedDimmedBase.map((b) => ({
@@ -2126,17 +2112,9 @@ const FlowSceneInner: React.FC<{
 
     // 1c. Barras Colectoras Troncales Físicas y Carteles SCADA (Modo BUSES)
     const isBuses = layoutMode === 'BUSES';
-    if (isBuses && busPlaques && busPlaques.length > 0) {
+    if (isBuses && busPlaques && busPlaques.length > 0 && !selectedEdge) {
       for (let i = 0; i < busPlaques.length; i++) {
         const bp = busPlaques[i];
-        if (selectedEdge) {
-          const isTargetBus =
-            selectedEdge.target === bp.id ||
-            selectedEdge.source === bp.id ||
-            selectedEdge.target.includes(bp.kv.toString()) ||
-            selectedEdge.source.includes(bp.kv.toString());
-          if (!isTargetBus) continue;
-        }
         if (bp.y < viewMinY - 140 || bp.y > viewMaxY + 140) continue;
 
         const isDimmed = filterKv !== null && filterKv !== bp.kv;
@@ -2209,19 +2187,8 @@ const FlowSceneInner: React.FC<{
       }
     }
 
-    // 2c. Flujo dinámico animado (solo si animateFlow está activo o si hay un vínculo seleccionado)
-    if (selectedEdge) {
-      if (compiledPaths.activeAnim2D.length > 0) {
-        const a = compiledPaths.activeAnim2D[0];
-        ctx.globalAlpha = 1.0;
-        ctx.strokeStyle = a.cfg.color;
-        ctx.lineWidth = (a.cfg.width + 1.2) * (isMap ? 1.2 : 1.0);
-        ctx.setLineDash(a.dash);
-        const speedPx = SPEED_PX_PER_SEC[a.speed];
-        ctx.lineDashOffset = -(dashPhaseRef.current * speedPx) % 240;
-        ctx.stroke(a.path);
-      }
-    } else if (animateFlow && compiledPaths.activeAnim2D.length > 0) {
+    // 2c. Flujo dinámico animado (solo si animateFlow está activo y no hay aislamiento)
+    if (!selectedEdge && animateFlow && compiledPaths.activeAnim2D.length > 0) {
       if (vp.zoom < 0.65) {
         // En vista macro o zoom medio: trazado animado agrupado por tensión y velocidad (máx 15 llamadas de GPU en total)
         ctx.globalAlpha = 0.96;
@@ -2260,7 +2227,97 @@ const FlowSceneInner: React.FC<{
     ctx.setLineDash([]);
     const iconPaths = getIconPaths();
 
-    const drawStationNode = (n: GridNodeData, isDimmed: boolean, forceDetail = false) => {
+    const drawStationNode = (
+      n: GridNodeData,
+      isDimmed: boolean,
+      forceDetail = false,
+      customPos?: { x: number; y: number; scale?: number }
+    ) => {
+      if (customPos) {
+        const s = customPos.scale || 1.0;
+        ctx.save();
+        ctx.translate(customPos.x, customPos.y);
+        if (s !== 1.0) {
+          ctx.scale(s, s);
+        }
+
+        const kvKey = normalizeKvKey(n.voltageKv);
+        const vCfg = VOLTAGE_CONFIG[kvKey] || VOLTAGE_CONFIG[132];
+        const iconPath = iconPaths[n.iconKind] || iconPaths.dist;
+
+        // MODO PLANO UNIFILAR: Caja Cuadrada de 124x124px
+        ctx.fillStyle = '#FAF8F3';
+        ctx.fillRect(0, 0, BOX_SIZE, BOX_SIZE);
+        ctx.strokeStyle = '#222426';
+        ctx.lineWidth = 1.6;
+        ctx.strokeRect(0, 0, BOX_SIZE, BOX_SIZE);
+
+        // Franja superior de tensión (5px)
+        ctx.fillStyle = vCfg.color;
+        ctx.fillRect(0, 0, BOX_SIZE, 5);
+
+        // 1. Nombre arriba
+        ctx.fillStyle = '#222426';
+        ctx.font = '700 9.8px "IBM Plex Sans", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'top';
+        if (n.shortTitle2) {
+          ctx.fillText(n.shortTitle1, HALF_BOX, 9);
+          ctx.fillText(n.shortTitle2, HALF_BOX, 20);
+        } else {
+          ctx.fillText(n.shortTitle1, HALF_BOX, 13);
+        }
+
+        // 2. Caja de ícono al centro (42x42px)
+        const ibX = (BOX_SIZE - 42) / 2;
+        const ibY = 38;
+        ctx.fillStyle = '#EFECE2';
+        ctx.fillRect(ibX, ibY, 42, 42);
+        ctx.strokeStyle = vCfg.color;
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(ibX, ibY, 42, 42);
+
+        const ix = ibX + 9;
+        const iy = ibY + 9;
+        ctx.translate(ix, iy);
+        ctx.strokeStyle = vCfg.color;
+        ctx.lineWidth = 1.9;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.stroke(iconPath);
+        ctx.translate(-ix, -iy);
+
+        // 3. Pastilla técnica inferior (Tensión · MW y Amperes · Región)
+        const pillX = 6;
+        const pillY = 86;
+        const pillW = BOX_SIZE - 12;
+        const pillH = 31;
+        ctx.fillStyle = '#EAE4D7';
+        ctx.fillRect(pillX, pillY, pillW, pillH);
+        ctx.strokeStyle = '#D1CBBF';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(pillX, pillY, pillW, pillH);
+
+        ctx.fillStyle = '#222426';
+        ctx.font = '700 8.2px "IBM Plex Mono", monospace';
+        ctx.fillText(`${n.kvText} · ${n.powerMw}`, HALF_BOX, pillY + 4);
+
+        ctx.fillStyle = '#55524B';
+        ctx.font = '600 8px "IBM Plex Mono", monospace';
+        ctx.fillText(`${formatMilesEnteros(n.amperes)} A · ${n.region}`, HALF_BOX, pillY + 16.5);
+
+        // 4. Borneras
+        ctx.fillStyle = '#222426';
+        ctx.strokeStyle = '#FAF8F3';
+        ctx.lineWidth = 1;
+        ctx.fillRect(-4, HALF_BOX - 4, 8, 8);
+        ctx.strokeRect(-4, HALF_BOX - 4, 8, 8);
+        ctx.fillRect(BOX_SIZE - 4, HALF_BOX - 4, 8, 8);
+        ctx.strokeRect(BOX_SIZE - 4, HALF_BOX - 4, 8, 8);
+
+        ctx.restore();
+        return;
+      }
       // En el Mapa: tamaño calibrado (-20% adicional = 40px base, icono 22px).
       // El icono y el rectángulo de info tienen EXACTAMENTE el mismo alto (boxH = size)
       // y la tipografía escala linealmente sin pisos artificiales para que nunca desborde.
@@ -2466,6 +2523,90 @@ const FlowSceneInner: React.FC<{
       }
     };
 
+    const drawBusNodeCard = (
+      bp: { id: string; title: string; subtitle: string; kv: number; color: string },
+      boxX: number,
+      boxY: number,
+      scale = 1.0
+    ) => {
+      ctx.save();
+      ctx.translate(boxX, boxY);
+      if (scale !== 1.0) {
+        ctx.scale(scale, scale);
+      }
+
+      ctx.fillStyle = '#FAF8F3';
+      ctx.fillRect(0, 0, BOX_SIZE, BOX_SIZE);
+      ctx.strokeStyle = '#222426';
+      ctx.lineWidth = 1.6;
+      ctx.strokeRect(0, 0, BOX_SIZE, BOX_SIZE);
+
+      ctx.fillStyle = bp.color;
+      ctx.fillRect(0, 0, BOX_SIZE, 5);
+
+      ctx.fillStyle = '#222426';
+      ctx.font = '700 9.5px "IBM Plex Sans", sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      ctx.fillText('BARRA COLECTORA', HALF_BOX, 9);
+      ctx.fillText(`${bp.kv} kV SADI`, HALF_BOX, 21);
+
+      const ibX = (BOX_SIZE - 42) / 2;
+      const ibY = 38;
+      ctx.fillStyle = '#EFECE2';
+      ctx.fillRect(ibX, ibY, 42, 42);
+      ctx.strokeStyle = bp.color;
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(ibX, ibY, 42, 42);
+
+      ctx.strokeStyle = bp.color;
+      ctx.lineWidth = 2.5;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(ibX + 7, ibY + 14);
+      ctx.lineTo(ibX + 35, ibY + 14);
+      ctx.moveTo(ibX + 7, ibY + 21);
+      ctx.lineTo(ibX + 35, ibY + 21);
+      ctx.moveTo(ibX + 7, ibY + 28);
+      ctx.lineTo(ibX + 35, ibY + 28);
+      ctx.stroke();
+
+      ctx.fillStyle = '#222426';
+      ctx.beginPath();
+      ctx.arc(ibX + 14, ibY + 21, 2.5, 0, Math.PI * 2);
+      ctx.arc(ibX + 28, ibY + 21, 2.5, 0, Math.PI * 2);
+      ctx.fill();
+
+      const pillX = 6;
+      const pillY = 86;
+      const pillW = BOX_SIZE - 12;
+      const pillH = 31;
+      ctx.fillStyle = '#EAE4D7';
+      ctx.fillRect(pillX, pillY, pillW, pillH);
+      ctx.strokeStyle = '#D1CBBF';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(pillX, pillY, pillW, pillH);
+
+      ctx.fillStyle = '#222426';
+      ctx.font = '700 8.2px "IBM Plex Mono", monospace';
+      ctx.fillText(`${bp.kv} kV · NODO TRONCAL`, HALF_BOX, pillY + 4);
+
+      ctx.fillStyle = '#55524B';
+      ctx.font = '600 7.8px "IBM Plex Mono", monospace';
+      const sub = bp.subtitle.length > 20 ? bp.subtitle.slice(0, 18) + '…' : bp.subtitle;
+      ctx.fillText(sub, HALF_BOX, pillY + 16.5);
+
+      ctx.fillStyle = '#222426';
+      ctx.strokeStyle = '#FAF8F3';
+      ctx.lineWidth = 1;
+      ctx.fillRect(-4, HALF_BOX - 4, 8, 8);
+      ctx.strokeRect(-4, HALF_BOX - 4, 8, 8);
+      ctx.fillRect(BOX_SIZE - 4, HALF_BOX - 4, 8, 8);
+      ctx.strokeRect(BOX_SIZE - 4, HALF_BOX - 4, 8, 8);
+
+      ctx.restore();
+    };
+
     // PASO 1: DIBUJAR PRIMERO LAS ESTACIONES ATENUADAS (FONDO)
     if (!selectedEdge && dimmedNodes.length > 0) {
       ctx.globalAlpha = 0.22;
@@ -2482,12 +2623,136 @@ const FlowSceneInner: React.FC<{
       }
     } else {
       // MODO AISLAMIENTO DE VÍNCULO: Se oculta TODO el resto y solo aparecen las dos cosas que conecta ese cable
+      // colocadas una al lado de la otra en el centro de la pantalla actual.
       ctx.globalAlpha = 1.0;
-      for (let i = 0; i < positionedNodes.length; i++) {
-        const n = positionedNodes[i];
-        if (n.uid === selectedEdge.source || n.uid === selectedEdge.target) {
-          drawStationNode(n, false, true);
-        }
+
+      if (!isolationCenterRef.current) {
+        const rect = canvas.getBoundingClientRect();
+        const screenW = rect.width || window.innerWidth;
+        const screenH = rect.height || window.innerHeight;
+        isolationCenterRef.current = {
+          x: (screenW / 2 - vp.x) / vp.zoom,
+          y: (screenH / 2 - vp.y) / vp.zoom
+        };
+        isolationScaleRef.current = Math.max(1.0, 115 / (BOX_SIZE * vp.zoom));
+      }
+
+      const center = isolationCenterRef.current;
+      const scale = isolationScaleRef.current || 1.0;
+      const boxW = BOX_SIZE * scale;
+      const boxH = BOX_SIZE * scale;
+      const gap = 180 * scale;
+      const totalW = boxW * 2 + gap;
+      const leftX = center.x - totalW / 2;
+      const leftY = center.y - boxH / 2;
+      const rightX = center.x + totalW / 2 - boxW;
+      const rightY = center.y - boxH / 2;
+
+      // Buscar entidades origen y destino
+      const srcNode = positionedNodes.find(
+        (n) => n.uid === selectedEdge.source || n.code === selectedEdge.source || n.label === selectedEdge.source
+      );
+      const tgtNode = positionedNodes.find(
+        (n) => n.uid === selectedEdge.target || n.code === selectedEdge.target || n.label === selectedEdge.target
+      );
+      const srcBus = !srcNode && busPlaques ? busPlaques.find((b) => b.id === selectedEdge.source) : null;
+      const tgtBus = !tgtNode && busPlaques ? busPlaques.find((b) => b.id === selectedEdge.target) : null;
+
+      // 1. Dibujar elemento de la izquierda (Origen)
+      if (srcNode) {
+        drawStationNode(srcNode, false, true, { x: leftX, y: leftY, scale });
+      } else if (srcBus) {
+        drawBusNodeCard(srcBus, leftX, leftY, scale);
+      }
+
+      // 2. Dibujar elemento de la derecha (Destino)
+      if (tgtNode) {
+        drawStationNode(tgtNode, false, true, { x: rightX, y: rightY, scale });
+      } else if (tgtBus) {
+        drawBusNodeCard(tgtBus, rightX, rightY, scale);
+      }
+
+      // 3. Dibujar cable directo horizontal entre ambas cajas
+      const sx = leftX + boxW;
+      const sy = leftY + boxH / 2;
+      const tx = rightX;
+      const ty = rightY + boxH / 2;
+
+      const vCfg = VOLTAGE_CONFIG[normalizeKvKey(selectedEdge.kv)] || VOLTAGE_CONFIG[132];
+      const cableW = Math.max(3.2, vCfg.width * 1.4 * scale);
+
+      // Trazo base
+      ctx.beginPath();
+      ctx.moveTo(sx, sy);
+      ctx.lineTo(tx, ty);
+      ctx.strokeStyle = vCfg.color;
+      ctx.lineWidth = cableW;
+      ctx.stroke();
+
+      // Flujo animado
+      const dashLen = Math.max(10, Math.round(cableW * 2.8));
+      const gapLen = Math.max(8, Math.round(cableW * 2.0));
+      ctx.beginPath();
+      ctx.moveTo(sx, sy);
+      ctx.lineTo(tx, ty);
+      ctx.strokeStyle = '#FAF8F3';
+      ctx.lineWidth = Math.max(2, cableW * 0.55);
+      ctx.setLineDash([dashLen, gapLen]);
+      const speedPx = (SPEED_PX_PER_SEC[getSpeedBucket(selectedEdge.amperes)] || 40) * scale;
+      ctx.lineDashOffset = -(dashPhaseRef.current * speedPx) % (dashLen + gapLen);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Flecha direccional en el medio
+      const midX = (sx + tx) / 2;
+      const midY = sy;
+      const arrowSize = 9 * scale;
+      ctx.fillStyle = vCfg.color;
+      ctx.strokeStyle = '#FAF8F3';
+      ctx.lineWidth = 1.5 * scale;
+      ctx.beginPath();
+      ctx.moveTo(midX + arrowSize, midY);
+      ctx.lineTo(midX - arrowSize * 0.7, midY - arrowSize * 0.6);
+      ctx.lineTo(midX - arrowSize * 0.3, midY);
+      ctx.lineTo(midX - arrowSize * 0.7, midY + arrowSize * 0.6);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+
+      // Pastilla técnica sobre el cable
+      const ternasTxt = selectedEdge.parallelCount > 1 ? ` · ${selectedEdge.parallelCount} ternas` : '';
+      const badgeText = `${selectedEdge.kv} kV · ${formatMilesEnteros(selectedEdge.amperes)} A${ternasTxt}`;
+      const badgeFontSize = 9.5 * scale;
+      ctx.font = `700 ${badgeFontSize.toFixed(1)}px "IBM Plex Mono", monospace`;
+      const textW = ctx.measureText(badgeText).width;
+      const badgePadX = 8 * scale;
+      const badgePadY = 4.5 * scale;
+      const badgeW = textW + badgePadX * 2 + 4 * scale;
+      const badgeH = badgeFontSize + badgePadY * 2;
+      const badgeX = midX - badgeW / 2;
+      const badgeY = midY - badgeH - 10 * scale;
+
+      ctx.fillStyle = '#FAF8F3';
+      ctx.fillRect(badgeX, badgeY, badgeW, badgeH);
+      ctx.strokeStyle = '#222426';
+      ctx.lineWidth = 1.4 * scale;
+      ctx.strokeRect(badgeX, badgeY, badgeW, badgeH);
+
+      ctx.fillStyle = vCfg.color;
+      ctx.fillRect(badgeX, badgeY, 4 * scale, badgeH);
+
+      ctx.fillStyle = '#222426';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(badgeText, midX + 2 * scale, badgeY + badgeH / 2);
+
+      // Transportista bajo el cable
+      if (selectedEdge.empresa) {
+        ctx.font = `600 ${(8 * scale).toFixed(1)}px "IBM Plex Mono", monospace`;
+        ctx.fillStyle = '#68655E';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'top';
+        ctx.fillText(`TRANSPORTISTA: ${selectedEdge.empresa}`, midX, midY + 12 * scale);
       }
     }
   }, [
@@ -2610,6 +2875,52 @@ const FlowSceneInner: React.FC<{
   const handlePaneClick = useCallback(
     (event: React.MouseEvent) => {
       const flowPt = screenToFlowPosition({ x: event.clientX, y: event.clientY });
+
+      // Si hay un vínculo aislado, verificar clic en las dos cajas colocadas una al lado de la otra
+      if (selectedEdge && isolationCenterRef.current) {
+        const center = isolationCenterRef.current;
+        const scale = isolationScaleRef.current || 1.0;
+        const boxW = BOX_SIZE * scale;
+        const boxH = BOX_SIZE * scale;
+        const gap = 180 * scale;
+        const totalW = boxW * 2 + gap;
+        const leftX = center.x - totalW / 2;
+        const leftY = center.y - boxH / 2;
+        const rightX = center.x + totalW / 2 - boxW;
+        const rightY = center.y - boxH / 2;
+
+        const onLeftBox =
+          flowPt.x >= leftX - 4 &&
+          flowPt.x <= leftX + boxW + 4 &&
+          flowPt.y >= leftY - 4 &&
+          flowPt.y <= leftY + boxH + 4;
+
+        const onRightBox =
+          flowPt.x >= rightX - 4 &&
+          flowPt.x <= rightX + boxW + 4 &&
+          flowPt.y >= rightY - 4 &&
+          flowPt.y <= rightY + boxH + 4;
+
+        if (onLeftBox) {
+          const srcNode = positionedNodes.find(
+            (n) => n.uid === selectedEdge.source || n.code === selectedEdge.source || n.label === selectedEdge.source
+          );
+          if (srcNode) onSelectNode(srcNode);
+          return;
+        }
+
+        if (onRightBox) {
+          const tgtNode = positionedNodes.find(
+            (n) => n.uid === selectedEdge.target || n.code === selectedEdge.target || n.label === selectedEdge.target
+          );
+          if (tgtNode) onSelectNode(tgtNode);
+          return;
+        }
+
+        // Clic en cualquier otra parte fuera de las dos cajas -> volver al plano original
+        onClearSelectedEdge();
+        return;
+      }
 
       // 1. Verificar primero si el usuario tocó una estación (icono o rectángulo de datos)
       const isMap = layoutMode === 'MAP';
