@@ -2058,6 +2058,7 @@ const FlowSceneInner: React.FC<{
     batchedActiveBase,
     batchedActiveAnim,
     selectedEdge,
+    selectedNode,
     cableGeometries
   ]);
 
@@ -2096,7 +2097,7 @@ const FlowSceneInner: React.FC<{
     const showDetail = vp.zoom >= (isMap ? MAP_LOD_ZOOM : PLANO_LOD_ZOOM);
 
     // 1. Provincias de Argentina (Modo Mapa)
-    if (compiledPaths.provincePath2D) {
+    if (!selectedEdge && !selectedNode && compiledPaths.provincePath2D) {
       ctx.fillStyle = '#E5DFD0';
       ctx.strokeStyle = '#8A8173';
       ctx.lineWidth = 1.6 / Math.pow(vp.zoom, 0.55);
@@ -2105,7 +2106,7 @@ const FlowSceneInner: React.FC<{
     }
 
     // 1b. Trazados paralelos WFS opcionales
-    if (compiledPaths.wfsPaths2D.length > 0) {
+    if (!selectedEdge && !selectedNode && compiledPaths.wfsPaths2D.length > 0) {
       ctx.globalAlpha = 0.48;
       for (const w of compiledPaths.wfsPaths2D) {
         ctx.strokeStyle = w.color;
@@ -2168,7 +2169,7 @@ const FlowSceneInner: React.FC<{
 
     // 2. CABLES (Trazados unificados en GPU: cables activos nítidos, cables atenuados en fondo)
     // 2a. Cables atenuados (si hay filtro activo): batch de atenuación suave de fondo (máx 5 llamadas)
-    if (compiledPaths.dimmedBase2D.length > 0) {
+    if (!selectedEdge && !selectedNode && compiledPaths.dimmedBase2D.length > 0) {
       ctx.setLineDash([]);
       ctx.globalAlpha = 0.16;
       for (let i = 0; i < compiledPaths.dimmedBase2D.length; i++) {
@@ -2180,7 +2181,7 @@ const FlowSceneInner: React.FC<{
     }
 
     // 2b. Cables activos: trazado base continuo con saturación y contraste total (máx 5 llamadas)
-    if (compiledPaths.activeBase2D.length > 0) {
+    if (!selectedEdge && !selectedNode && compiledPaths.activeBase2D.length > 0) {
       ctx.setLineDash([]);
       ctx.globalAlpha = 0.88;
       for (let i = 0; i < compiledPaths.activeBase2D.length; i++) {
