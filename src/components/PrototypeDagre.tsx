@@ -1874,9 +1874,11 @@ const FlowSceneInner: React.FC<{
   searchQuery: string;
   showFullWfs: boolean;
   animateFlow: boolean;
+  selectedNode: GridNodeData | null;
   selectedEdge: GridEdgeData | null;
   onToggleFullWfs: () => void;
   onSelectNode: (d: GridNodeData) => void;
+  onClearSelectedNode: () => void;
   onSelectEdge: (d: GridEdgeData) => void;
   onClearSelectedEdge: () => void;
   onCountsChange: (nodeCount: number, edgeCount: number) => void;
@@ -1891,9 +1893,11 @@ const FlowSceneInner: React.FC<{
   searchQuery,
   showFullWfs,
   animateFlow,
+  selectedNode,
   selectedEdge,
   onToggleFullWfs,
   onSelectNode,
+  onClearSelectedNode,
   onSelectEdge,
   onClearSelectedEdge,
   onCountsChange
@@ -1909,11 +1913,11 @@ const FlowSceneInner: React.FC<{
   const isolationScaleRef = useRef<number>(1.0);
 
   useEffect(() => {
-    if (!selectedEdge) {
+    if (!selectedEdge && !selectedNode) {
       isolationCenterRef.current = null;
       isolationScaleRef.current = 1.0;
     }
-  }, [selectedEdge]);
+  }, [selectedEdge, selectedNode]);
 
   const provinces = topology?.provinces || [];
   const { allNodes, allEdges } = useMemo(() => buildMasterDataset(topology), [topology]);
@@ -2008,7 +2012,7 @@ const FlowSceneInner: React.FC<{
       });
     }
 
-    if (selectedEdge) {
+    if (selectedEdge || selectedNode) {
       return {
         provincePath2D: null,
         wfsPaths2D: [],
@@ -2112,7 +2116,7 @@ const FlowSceneInner: React.FC<{
 
     // 1c. Barras Colectoras Troncales Físicas y Carteles SCADA (Modo BUSES)
     const isBuses = layoutMode === 'BUSES';
-    if (isBuses && busPlaques && busPlaques.length > 0 && !selectedEdge) {
+    if (isBuses && busPlaques && busPlaques.length > 0 && !selectedEdge && !selectedNode) {
       for (let i = 0; i < busPlaques.length; i++) {
         const bp = busPlaques[i];
         if (bp.y < viewMinY - 140 || bp.y > viewMaxY + 140) continue;
@@ -2188,7 +2192,7 @@ const FlowSceneInner: React.FC<{
     }
 
     // 2c. Flujo dinámico animado (solo si animateFlow está activo y no hay aislamiento)
-    if (!selectedEdge && animateFlow && compiledPaths.activeAnim2D.length > 0) {
+    if (!selectedEdge && !selectedNode && animateFlow && compiledPaths.activeAnim2D.length > 0) {
       if (vp.zoom < 0.65) {
         // En vista macro o zoom medio: trazado animado agrupado por tensión y velocidad (máx 15 llamadas de GPU en total)
         ctx.globalAlpha = 0.96;
@@ -2608,7 +2612,7 @@ const FlowSceneInner: React.FC<{
     };
 
     // PASO 1: DIBUJAR PRIMERO LAS ESTACIONES ATENUADAS (FONDO)
-    if (!selectedEdge && dimmedNodes.length > 0) {
+    if (!selectedEdge && !selectedNode && dimmedNodes.length > 0) {
       ctx.globalAlpha = 0.22;
       for (let i = 0; i < dimmedNodes.length; i++) {
         drawStationNode(dimmedNodes[i], true);
@@ -2616,12 +2620,12 @@ const FlowSceneInner: React.FC<{
     }
 
     // PASO 2: DIBUJAR ENCIMA LAS ESTACIONES ACTIVAS / RESALTADAS (FRENTE)
-    if (!selectedEdge) {
+    if (!selectedEdge && !selectedNode) {
       ctx.globalAlpha = 1.0;
       for (let i = 0; i < activeNodes.length; i++) {
         drawStationNode(activeNodes[i], false);
       }
-    } else {
+    } else if (selectedEdge) {
       // MODO AISLAMIENTO DE VÍNCULO: Se oculta TODO el resto y solo aparecen las dos cosas que conecta ese cable
       // colocadas una al lado de la otra en el centro de la pantalla actual.
       ctx.globalAlpha = 1.0;
@@ -2754,6 +2758,361 @@ const FlowSceneInner: React.FC<{
         ctx.textBaseline = 'top';
         ctx.fillText(`TRANSPORTISTA: ${selectedEdge.empresa}`, midX, midY + 12 * scale);
       }
+    } else if (selectedNode) {
+      // MODO NAVEGACIÓN INTERACTIVA 1-SALTO (ESTACIÓN CENTRAL + ALIMENTADORES + DESTINOS)
+      ctx.globalAlpha = 1.0;
+
+      if (!isolationCenterRef.current) {
+        const rect = canvas.getBoundingClientRect();
+        const screenW = rect.width || window.innerWidth;
+        const screenH = rect.height || window.innerHeight;
+        isolationCenterRef.current = {
+          x: (screenW / 2 - vp.x) / vp.zoom,
+          y: (screenH / 2 - vp.y) / vp.zoom
+        };
+        isolationScaleRef.current = Math.max(1.0, 115 / (BOX_SIZE * vp.zoom));
+      }
+
+      const center = isolationCenterRef.current;
+      const scale = isolationScaleRef.current || 1.0;
+      const boxW = BOX_SIZE * scale;
+      const boxH = BOX_SIZE * scale;
+      const rowGap = 22 * scale;
+      const colGap = 160 * scale;
+
+      const nodeId = selectedNode.uid;
+      const inEdges = cableGeometries.filter(
+        (cg) => cg.edge.target === nodeId || cg.edge.target === selectedNode.code
+      );
+      const outEdges = cableGeometries.filter(
+        (cg) => cg.edge.source === nodeId || cg.edge.source === selectedNode.code
+      );
+
+      interface ConnectedHopItem {
+        id: string;
+        partnerNode: GridNodeData | null;
+        partnerBus: { id: string; title: string; subtitle: string; kv: number; color: string } | null;
+        edges: ComputedCableGeometry[];
+        totalAmperes: number;
+        highestKv: number;
+        parallelCount: number;
+      }
+
+      const inPartnersMap = new Map<string, ConnectedHopItem>();
+      inEdges.forEach((cg) => {
+        const partnerId = cg.edge.source;
+        if (!inPartnersMap.has(partnerId)) {
+          const pNode =
+            positionedNodes.find(
+              (n) => n.uid === partnerId || n.code === partnerId || n.label === partnerId
+            ) || null;
+          const pBus =
+            !pNode && busPlaques ? busPlaques.find((b) => b.id === partnerId) || null : null;
+          inPartnersMap.set(partnerId, {
+            id: partnerId,
+            partnerNode: pNode,
+            partnerBus: pBus,
+            edges: [cg],
+            totalAmperes: cg.edge.amperes,
+            highestKv: cg.edge.kv,
+            parallelCount: cg.edge.parallelCount || 1
+          });
+        } else {
+          const item = inPartnersMap.get(partnerId)!;
+          item.edges.push(cg);
+          item.totalAmperes += cg.edge.amperes;
+          item.highestKv = Math.max(item.highestKv, cg.edge.kv);
+          item.parallelCount += cg.edge.parallelCount || 1;
+        }
+      });
+
+      const outPartnersMap = new Map<string, ConnectedHopItem>();
+      outEdges.forEach((cg) => {
+        const partnerId = cg.edge.target;
+        if (inPartnersMap.has(partnerId)) return;
+        if (!outPartnersMap.has(partnerId)) {
+          const pNode =
+            positionedNodes.find(
+              (n) => n.uid === partnerId || n.code === partnerId || n.label === partnerId
+            ) || null;
+          const pBus =
+            !pNode && busPlaques ? busPlaques.find((b) => b.id === partnerId) || null : null;
+          outPartnersMap.set(partnerId, {
+            id: partnerId,
+            partnerNode: pNode,
+            partnerBus: pBus,
+            edges: [cg],
+            totalAmperes: cg.edge.amperes,
+            highestKv: cg.edge.kv,
+            parallelCount: cg.edge.parallelCount || 1
+          });
+        } else {
+          const item = outPartnersMap.get(partnerId)!;
+          item.edges.push(cg);
+          item.totalAmperes += cg.edge.amperes;
+          item.highestKv = Math.max(item.highestKv, cg.edge.kv);
+          item.parallelCount += cg.edge.parallelCount || 1;
+        }
+      });
+
+      const inItems = Array.from(inPartnersMap.values());
+      const outItems = Array.from(outPartnersMap.values());
+
+      let centerX = center.x - boxW / 2;
+      let leftColX = center.x - boxW / 2 - colGap - boxW;
+      let rightColX = center.x + boxW / 2 + colGap;
+
+      if (inItems.length > 0 && outItems.length === 0) {
+        centerX = center.x + colGap / 2;
+        leftColX = center.x - colGap / 2 - boxW;
+      } else if (inItems.length === 0 && outItems.length > 0) {
+        centerX = center.x - colGap / 2 - boxW;
+        rightColX = center.x + colGap / 2;
+      } else if (inItems.length === 0 && outItems.length === 0) {
+        centerX = center.x - boxW / 2;
+      }
+
+      const centerY = center.y - boxH / 2;
+
+      const totalInH = inItems.length * boxH + Math.max(0, inItems.length - 1) * rowGap;
+      const inStartY = center.y - totalInH / 2;
+
+      const totalOutH = outItems.length * boxH + Math.max(0, outItems.length - 1) * rowGap;
+      const outStartY = center.y - totalOutH / 2;
+
+      // 1. Cables de Entrada (Alimentadores -> Nodo Central)
+      inItems.forEach((item, i) => {
+        const inY = inStartY + i * (boxH + rowGap);
+        const sx = leftColX + boxW;
+        const sy = inY + boxH / 2;
+
+        const inSpread = inItems.length > 1 ? Math.min(boxH * 0.7, (inItems.length - 1) * 16 * scale) : 0;
+        const inStep = inItems.length > 1 ? inSpread / (inItems.length - 1) : 0;
+        const ty = inItems.length > 1 ? centerY + boxH / 2 - inSpread / 2 + i * inStep : centerY + boxH / 2;
+        const tx = centerX;
+
+        const dx = tx - sx;
+        const cp1x = sx + dx * 0.45;
+        const cp1y = sy;
+        const cp2x = tx - dx * 0.45;
+        const cp2y = ty;
+
+        const vCfg = VOLTAGE_CONFIG[normalizeKvKey(item.highestKv)] || VOLTAGE_CONFIG[132];
+        const cableW = Math.max(3.0, vCfg.width * 1.3 * scale);
+
+        ctx.beginPath();
+        ctx.moveTo(sx, sy);
+        ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, tx, ty);
+        ctx.strokeStyle = vCfg.color;
+        ctx.lineWidth = cableW;
+        ctx.stroke();
+
+        const dashLen = Math.max(10, Math.round(cableW * 2.8));
+        const gapLen = Math.max(8, Math.round(cableW * 2.0));
+        ctx.strokeStyle = '#FAF8F3';
+        ctx.lineWidth = Math.max(2, cableW * 0.55);
+        ctx.setLineDash([dashLen, gapLen]);
+        const speedPx = (SPEED_PX_PER_SEC[getSpeedBucket(item.totalAmperes)] || 40) * scale;
+        ctx.lineDashOffset = -(dashPhaseRef.current * speedPx) % (dashLen + gapLen);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Flecha en el punto medio
+        const midX = 0.125 * sx + 0.375 * cp1x + 0.375 * cp2x + 0.125 * tx;
+        const midY = 0.125 * sy + 0.375 * cp1y + 0.375 * cp2y + 0.125 * ty;
+        const ddx = 0.75 * (cp1x - sx) + 1.5 * (cp2x - cp1x) + 0.75 * (tx - cp2x);
+        const ddy = 0.75 * (cp1y - sy) + 1.5 * (cp2y - cp1y) + 0.75 * (ty - cp2y);
+        const angle = Math.atan2(ddy, ddx);
+
+        ctx.save();
+        ctx.translate(midX, midY);
+        ctx.rotate(angle);
+        const arrowSize = 8.5 * scale;
+        ctx.fillStyle = vCfg.color;
+        ctx.strokeStyle = '#FAF8F3';
+        ctx.lineWidth = 1.4 * scale;
+        ctx.beginPath();
+        ctx.moveTo(arrowSize, 0);
+        ctx.lineTo(-arrowSize * 0.7, -arrowSize * 0.55);
+        ctx.lineTo(-arrowSize * 0.3, 0);
+        ctx.lineTo(-arrowSize * 0.7, arrowSize * 0.55);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+
+        // Pastilla técnica
+        const ternasTxt = item.parallelCount > 1 ? ` · ${item.parallelCount}t` : '';
+        const badgeText = `${item.highestKv} kV · ${formatMilesEnteros(item.totalAmperes)} A${ternasTxt}`;
+        const badgeFontSize = 8.5 * scale;
+        ctx.font = `700 ${badgeFontSize.toFixed(1)}px "IBM Plex Mono", monospace`;
+        const textW = ctx.measureText(badgeText).width;
+        const badgePadX = 6 * scale;
+        const badgePadY = 3.5 * scale;
+        const badgeW = textW + badgePadX * 2 + 4 * scale;
+        const badgeH = badgeFontSize + badgePadY * 2;
+        const badgeX = midX - badgeW / 2;
+        const badgeY = midY - badgeH - 8 * scale;
+
+        ctx.fillStyle = '#FAF8F3';
+        ctx.fillRect(badgeX, badgeY, badgeW, badgeH);
+        ctx.strokeStyle = '#222426';
+        ctx.lineWidth = 1.3 * scale;
+        ctx.strokeRect(badgeX, badgeY, badgeW, badgeH);
+
+        ctx.fillStyle = vCfg.color;
+        ctx.fillRect(badgeX, badgeY, 3.5 * scale, badgeH);
+
+        ctx.fillStyle = '#222426';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(badgeText, midX + 2 * scale, badgeY + badgeH / 2);
+      });
+
+      // 2. Cables de Salida (Nodo Central -> Destinos)
+      outItems.forEach((item, j) => {
+        const outY = outStartY + j * (boxH + rowGap);
+        const outSpread = outItems.length > 1 ? Math.min(boxH * 0.7, (outItems.length - 1) * 16 * scale) : 0;
+        const outStep = outItems.length > 1 ? outSpread / (outItems.length - 1) : 0;
+        const sy = outItems.length > 1 ? centerY + boxH / 2 - outSpread / 2 + j * outStep : centerY + boxH / 2;
+        const sx = centerX + boxW;
+        const ty = outY + boxH / 2;
+        const tx = rightColX;
+
+        const dx = tx - sx;
+        const cp1x = sx + dx * 0.45;
+        const cp1y = sy;
+        const cp2x = tx - dx * 0.45;
+        const cp2y = ty;
+
+        const vCfg = VOLTAGE_CONFIG[normalizeKvKey(item.highestKv)] || VOLTAGE_CONFIG[132];
+        const cableW = Math.max(3.0, vCfg.width * 1.3 * scale);
+
+        ctx.beginPath();
+        ctx.moveTo(sx, sy);
+        ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, tx, ty);
+        ctx.strokeStyle = vCfg.color;
+        ctx.lineWidth = cableW;
+        ctx.stroke();
+
+        const dashLen = Math.max(10, Math.round(cableW * 2.8));
+        const gapLen = Math.max(8, Math.round(cableW * 2.0));
+        ctx.strokeStyle = '#FAF8F3';
+        ctx.lineWidth = Math.max(2, cableW * 0.55);
+        ctx.setLineDash([dashLen, gapLen]);
+        const speedPx = (SPEED_PX_PER_SEC[getSpeedBucket(item.totalAmperes)] || 40) * scale;
+        ctx.lineDashOffset = -(dashPhaseRef.current * speedPx) % (dashLen + gapLen);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        const midX = 0.125 * sx + 0.375 * cp1x + 0.375 * cp2x + 0.125 * tx;
+        const midY = 0.125 * sy + 0.375 * cp1y + 0.375 * cp2y + 0.125 * ty;
+        const ddx = 0.75 * (cp1x - sx) + 1.5 * (cp2x - cp1x) + 0.75 * (tx - cp2x);
+        const ddy = 0.75 * (cp1y - sy) + 1.5 * (cp2y - cp1y) + 0.75 * (ty - cp2y);
+        const angle = Math.atan2(ddy, ddx);
+
+        ctx.save();
+        ctx.translate(midX, midY);
+        ctx.rotate(angle);
+        const arrowSize = 8.5 * scale;
+        ctx.fillStyle = vCfg.color;
+        ctx.strokeStyle = '#FAF8F3';
+        ctx.lineWidth = 1.4 * scale;
+        ctx.beginPath();
+        ctx.moveTo(arrowSize, 0);
+        ctx.lineTo(-arrowSize * 0.7, -arrowSize * 0.55);
+        ctx.lineTo(-arrowSize * 0.3, 0);
+        ctx.lineTo(-arrowSize * 0.7, arrowSize * 0.55);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+
+        const ternasTxt = item.parallelCount > 1 ? ` · ${item.parallelCount}t` : '';
+        const badgeText = `${item.highestKv} kV · ${formatMilesEnteros(item.totalAmperes)} A${ternasTxt}`;
+        const badgeFontSize = 8.5 * scale;
+        ctx.font = `700 ${badgeFontSize.toFixed(1)}px "IBM Plex Mono", monospace`;
+        const textW = ctx.measureText(badgeText).width;
+        const badgePadX = 6 * scale;
+        const badgePadY = 3.5 * scale;
+        const badgeW = textW + badgePadX * 2 + 4 * scale;
+        const badgeH = badgeFontSize + badgePadY * 2;
+        const badgeX = midX - badgeW / 2;
+        const badgeY = midY - badgeH - 8 * scale;
+
+        ctx.fillStyle = '#FAF8F3';
+        ctx.fillRect(badgeX, badgeY, badgeW, badgeH);
+        ctx.strokeStyle = '#222426';
+        ctx.lineWidth = 1.3 * scale;
+        ctx.strokeRect(badgeX, badgeY, badgeW, badgeH);
+
+        ctx.fillStyle = vCfg.color;
+        ctx.fillRect(badgeX, badgeY, 3.5 * scale, badgeH);
+
+        ctx.fillStyle = '#222426';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(badgeText, midX + 2 * scale, badgeY + badgeH / 2);
+      });
+
+      // 3. Dibujar tarjetas de Alimentadores (Entradas)
+      if (inItems.length > 0) {
+        const inHeaderTxt = `◄ ALIMENTADORES (${inItems.length})`;
+        ctx.font = `700 ${(9 * scale).toFixed(1)}px "IBM Plex Mono", monospace`;
+        ctx.fillStyle = '#55524B';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'bottom';
+        ctx.fillText(inHeaderTxt, leftColX + boxW / 2, inStartY - 10 * scale);
+
+        inItems.forEach((item, i) => {
+          const inY = inStartY + i * (boxH + rowGap);
+          if (item.partnerNode) {
+            drawStationNode(item.partnerNode, false, true, { x: leftColX, y: inY, scale });
+          } else if (item.partnerBus) {
+            drawBusNodeCard(item.partnerBus, leftColX, inY, scale);
+          }
+        });
+      }
+
+      // 4. Dibujar tarjetas de Destinos (Salidas)
+      if (outItems.length > 0) {
+        const outHeaderTxt = `DESTINOS (${outItems.length}) ►`;
+        ctx.font = `700 ${(9 * scale).toFixed(1)}px "IBM Plex Mono", monospace`;
+        ctx.fillStyle = '#55524B';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'bottom';
+        ctx.fillText(outHeaderTxt, rightColX + boxW / 2, outStartY - 10 * scale);
+
+        outItems.forEach((item, j) => {
+          const outY = outStartY + j * (boxH + rowGap);
+          if (item.partnerNode) {
+            drawStationNode(item.partnerNode, false, true, { x: rightColX, y: outY, scale });
+          } else if (item.partnerBus) {
+            drawBusNodeCard(item.partnerBus, rightColX, outY, scale);
+          }
+        });
+      }
+
+      // 5. Dibujar Nodo Central
+      ctx.strokeStyle = '#222426';
+      ctx.lineWidth = 2.4 * scale;
+      ctx.strokeRect(centerX - 3 * scale, centerY - 3 * scale, boxW + 6 * scale, boxH + 6 * scale);
+
+      drawStationNode(selectedNode, false, true, { x: centerX, y: centerY, scale });
+
+      const focusBadgeText = '★ NODO EN FOCO';
+      const fbFontSize = 9.0 * scale;
+      ctx.font = `700 ${fbFontSize.toFixed(1)}px "IBM Plex Mono", monospace`;
+      const fbW = ctx.measureText(focusBadgeText).width + 14 * scale;
+      const fbH = fbFontSize + 7 * scale;
+      const fbX = centerX + (boxW - fbW) / 2;
+      const fbY = centerY - fbH - 7 * scale;
+      ctx.fillStyle = '#222426';
+      ctx.fillRect(fbX, fbY, fbW, fbH);
+      ctx.fillStyle = '#FAF8F3';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(focusBadgeText, centerX + boxW / 2, fbY + fbH / 2);
     }
   }, [
     compiledPaths,
@@ -2771,7 +3130,8 @@ const FlowSceneInner: React.FC<{
     filterRole,
     searchQuery,
     animateFlow,
-    selectedEdge
+    selectedEdge,
+    selectedNode
   ]);
 
   // Bucle de animación de corriente (pausado automáticamente mientras el dedo arrastra o si el usuario desactivó el flujo)
@@ -2905,7 +3265,10 @@ const FlowSceneInner: React.FC<{
           const srcNode = positionedNodes.find(
             (n) => n.uid === selectedEdge.source || n.code === selectedEdge.source || n.label === selectedEdge.source
           );
-          if (srcNode) onSelectNode(srcNode);
+          if (srcNode) {
+            isolationCenterRef.current = null;
+            onSelectNode(srcNode);
+          }
           return;
         }
 
@@ -2913,12 +3276,131 @@ const FlowSceneInner: React.FC<{
           const tgtNode = positionedNodes.find(
             (n) => n.uid === selectedEdge.target || n.code === selectedEdge.target || n.label === selectedEdge.target
           );
-          if (tgtNode) onSelectNode(tgtNode);
+          if (tgtNode) {
+            isolationCenterRef.current = null;
+            onSelectNode(tgtNode);
+          }
           return;
         }
 
         // Clic en cualquier otra parte fuera de las dos cajas -> volver al plano original
         onClearSelectedEdge();
+        return;
+      }
+
+      // Si hay una estación aislada en navegación 1-salto, comprobar clics en centro o nodos adyacentes
+      if (selectedNode && isolationCenterRef.current) {
+        const center = isolationCenterRef.current;
+        const scale = isolationScaleRef.current || 1.0;
+        const boxW = BOX_SIZE * scale;
+        const boxH = BOX_SIZE * scale;
+        const rowGap = 22 * scale;
+        const colGap = 160 * scale;
+
+        const nodeId = selectedNode.uid;
+        const inEdges = cableGeometries.filter(
+          (cg) => cg.edge.target === nodeId || cg.edge.target === selectedNode.code
+        );
+        const outEdges = cableGeometries.filter(
+          (cg) => cg.edge.source === nodeId || cg.edge.source === selectedNode.code
+        );
+
+        const inPartnersMap = new Map<string, GridNodeData | null>();
+        inEdges.forEach((cg) => {
+          const partnerId = cg.edge.source;
+          if (!inPartnersMap.has(partnerId)) {
+            const pNode =
+              positionedNodes.find(
+                (n) => n.uid === partnerId || n.code === partnerId || n.label === partnerId
+              ) || null;
+            inPartnersMap.set(partnerId, pNode);
+          }
+        });
+
+        const outPartnersMap = new Map<string, GridNodeData | null>();
+        outEdges.forEach((cg) => {
+          const partnerId = cg.edge.target;
+          if (inPartnersMap.has(partnerId)) return;
+          if (!outPartnersMap.has(partnerId)) {
+            const pNode =
+              positionedNodes.find(
+                (n) => n.uid === partnerId || n.code === partnerId || n.label === partnerId
+              ) || null;
+            outPartnersMap.set(partnerId, pNode);
+          }
+        });
+
+        const inItemsList = Array.from(inPartnersMap.values());
+        const outItemsList = Array.from(outPartnersMap.values());
+
+        let centerX = center.x - boxW / 2;
+        let leftColX = center.x - boxW / 2 - colGap - boxW;
+        let rightColX = center.x + boxW / 2 + colGap;
+
+        if (inItemsList.length > 0 && outItemsList.length === 0) {
+          centerX = center.x + colGap / 2;
+          leftColX = center.x - colGap / 2 - boxW;
+        } else if (inItemsList.length === 0 && outItemsList.length > 0) {
+          centerX = center.x - colGap / 2 - boxW;
+          rightColX = center.x + colGap / 2;
+        } else if (inItemsList.length === 0 && outItemsList.length === 0) {
+          centerX = center.x - boxW / 2;
+        }
+
+        const centerY = center.y - boxH / 2;
+        const totalInH = inItemsList.length * boxH + Math.max(0, inItemsList.length - 1) * rowGap;
+        const inStartY = center.y - totalInH / 2;
+        const totalOutH = outItemsList.length * boxH + Math.max(0, outItemsList.length - 1) * rowGap;
+        const outStartY = center.y - totalOutH / 2;
+
+        // Clic en el nodo central
+        if (
+          flowPt.x >= centerX - 4 &&
+          flowPt.x <= centerX + boxW + 4 &&
+          flowPt.y >= centerY - 4 &&
+          flowPt.y <= centerY + boxH + 4
+        ) {
+          return;
+        }
+
+        // Clic en algún nodo alimentador (Entrada) -> saltar y seguir camino
+        for (let i = 0; i < inItemsList.length; i++) {
+          const pNode = inItemsList[i];
+          const y_i = inStartY + i * (boxH + rowGap);
+          if (
+            flowPt.x >= leftColX - 4 &&
+            flowPt.x <= leftColX + boxW + 4 &&
+            flowPt.y >= y_i - 4 &&
+            flowPt.y <= y_i + boxH + 4
+          ) {
+            if (pNode) {
+              isolationCenterRef.current = null;
+              onSelectNode(pNode);
+            }
+            return;
+          }
+        }
+
+        // Clic en algún nodo destino (Salida) -> saltar y seguir camino
+        for (let j = 0; j < outItemsList.length; j++) {
+          const pNode = outItemsList[j];
+          const y_j = outStartY + j * (boxH + rowGap);
+          if (
+            flowPt.x >= rightColX - 4 &&
+            flowPt.x <= rightColX + boxW + 4 &&
+            flowPt.y >= y_j - 4 &&
+            flowPt.y <= y_j + boxH + 4
+          ) {
+            if (pNode) {
+              isolationCenterRef.current = null;
+              onSelectNode(pNode);
+            }
+            return;
+          }
+        }
+
+        // Clic fuera -> restaurar plano completo
+        onClearSelectedNode();
         return;
       }
 
@@ -2957,6 +3439,7 @@ const FlowSceneInner: React.FC<{
         }
 
         if (onIcon || onLabel) {
+          isolationCenterRef.current = null;
           onSelectNode(n);
           return;
         }
@@ -2986,9 +3469,12 @@ const FlowSceneInner: React.FC<{
       }
 
       if (bestEdge) {
+        isolationCenterRef.current = null;
         onSelectEdge(bestEdge);
       } else if (selectedEdge) {
         onClearSelectedEdge();
+      } else if (selectedNode) {
+        onClearSelectedNode();
       }
     },
     [
@@ -2997,8 +3483,10 @@ const FlowSceneInner: React.FC<{
       layoutMode,
       screenToFlowPosition,
       onSelectNode,
+      onClearSelectedNode,
       onSelectEdge,
       selectedEdge,
+      selectedNode,
       onClearSelectedEdge
     ]
   );
@@ -3562,9 +4050,11 @@ export const PrototypeDagre: React.FC = () => {
             searchQuery={searchQuery}
             showFullWfs={showFullWfs}
             animateFlow={animateFlow}
+            selectedNode={selectedNode}
             selectedEdge={selectedEdge}
             onToggleFullWfs={() => setShowFullWfs((v) => !v)}
             onSelectNode={handleSelectNode}
+            onClearSelectedNode={() => setSelectedNode(null)}
             onSelectEdge={handleSelectEdge}
             onClearSelectedEdge={() => setSelectedEdge(null)}
             onCountsChange={handleCountsChange}
@@ -3734,6 +4224,188 @@ export const PrototypeDagre: React.FC = () => {
             </div>
           </aside>
         )}
+
+        {/* TARJETA TÉCNICA FLOTANTE CUANDO SE SELECCIONA UNA ESTACIÓN (NAVEGACIÓN 1-SALTO) */}
+        {selectedNode && (
+          <aside
+            style={{
+              position: 'absolute',
+              top: 14,
+              right: 14,
+              width: '390px',
+              maxWidth: 'calc(100vw - 28px)',
+              backgroundColor: '#FAF8F3',
+              border: '2px solid #222426',
+              boxShadow: '0 8px 24px rgba(0,0,0,0.18)',
+              zIndex: 1000,
+              display: 'flex',
+              flexDirection: 'column',
+              fontFamily: '"IBM Plex Sans", sans-serif'
+            }}
+          >
+            {/* Cabecera */}
+            <div
+              style={{
+                backgroundColor: '#222426',
+                color: '#FAF8F3',
+                padding: '8px 12px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '8px'
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span
+                  style={{
+                    backgroundColor: '#FAF8F3',
+                    color: '#222426',
+                    fontFamily: '"IBM Plex Mono", monospace',
+                    fontSize: '10px',
+                    fontWeight: 700,
+                    padding: '2px 6px'
+                  }}
+                >
+                  {selectedNode.typeName || 'ESTACIÓN'}
+                </span>
+                <span
+                  style={{
+                    fontSize: '11px',
+                    fontWeight: 700,
+                    letterSpacing: '0.04em',
+                    fontFamily: '"IBM Plex Mono", monospace'
+                  }}
+                >
+                  NAVEGACIÓN 1-SALTO
+                </span>
+              </div>
+              <button
+                onClick={() => setSelectedNode(null)}
+                title="Cerrar (Escape)"
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  color: '#FAF8F3',
+                  fontSize: '16px',
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                  padding: '0 4px',
+                  lineHeight: 1
+                }}
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Cuerpo */}
+            <div style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              <div>
+                <h3
+                  style={{
+                    fontSize: '16px',
+                    fontWeight: 700,
+                    color: '#222426',
+                    margin: 0,
+                    lineHeight: 1.2
+                  }}
+                >
+                  {selectedNode.label}
+                </h3>
+                <div
+                  style={{
+                    fontFamily: '"IBM Plex Mono", monospace',
+                    fontSize: '10.5px',
+                    color: '#68655E',
+                    marginTop: '2px'
+                  }}
+                >
+                  {selectedNode.code} · {selectedNode.provincia.toUpperCase()} ({selectedNode.region})
+                </div>
+              </div>
+
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: '1fr 1fr',
+                  gap: '6px',
+                  fontFamily: '"IBM Plex Mono", monospace'
+                }}
+              >
+                <div style={{ backgroundColor: '#FAF8F3', border: '1px solid #E2DCD2', padding: '6px 8px' }}>
+                  <div style={{ fontSize: '9px', color: '#68655E', fontWeight: 600 }}>
+                    {selectedNode.role === 'GEN'
+                      ? 'POTENCIA INSTALADA'
+                      : selectedNode.role === 'DIST' || selectedNode.role === 'COOP'
+                      ? 'DEMANDA ESTIMADA'
+                      : 'TRANSFORMACIÓN'}
+                  </div>
+                  <div style={{ fontSize: '13px', fontWeight: 700, color: '#222426' }}>
+                    {selectedNode.powerMw}
+                  </div>
+                </div>
+
+                <div style={{ backgroundColor: '#FAF8F3', border: '1px solid #E2DCD2', padding: '6px 8px' }}>
+                  <div style={{ fontSize: '9px', color: '#68655E', fontWeight: 600 }}>CORRIENTE EN VIVO</div>
+                  <div style={{ fontSize: '13px', fontWeight: 700, color: '#222426' }}>
+                    {formatMilesEnteros(selectedNode.amperes)} A
+                  </div>
+                </div>
+
+                <div style={{ backgroundColor: '#FAF8F3', border: '1px solid #E2DCD2', padding: '6px 8px' }}>
+                  <div style={{ fontSize: '9px', color: '#68655E', fontWeight: 600 }}>TENSIÓN NOMINAL</div>
+                  <div style={{ fontSize: '13px', fontWeight: 700, color: '#222426' }}>
+                    {selectedNode.kvText}
+                  </div>
+                </div>
+
+                <div style={{ backgroundColor: '#FAF8F3', border: '1px solid #E2DCD2', padding: '6px 8px' }}>
+                  <div style={{ fontSize: '9px', color: '#68655E', fontWeight: 600 }}>AGENTE / OPERADOR</div>
+                  <div style={{ fontSize: '11px', fontWeight: 700, color: '#222426', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {selectedNode.operator}
+                  </div>
+                </div>
+              </div>
+
+              <div
+                style={{
+                  backgroundColor: '#ECE8DE',
+                  border: '1px solid #D5CEBF',
+                  padding: '6px 8px',
+                  fontSize: '10px',
+                  fontFamily: '"IBM Plex Mono", monospace',
+                  color: '#44413B',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px'
+                }}
+              >
+                <span>💡</span>
+                <span>Haga clic en cualquier estación conectada para saltar y seguir el camino.</span>
+              </div>
+
+              <button
+                onClick={() => setSelectedNode(null)}
+                style={{
+                  marginTop: '2px',
+                  backgroundColor: '#222426',
+                  color: '#FAF8F3',
+                  border: 'none',
+                  padding: '8px 12px',
+                  fontSize: '11px',
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '6px',
+                  fontFamily: '"IBM Plex Mono", monospace'
+                }}
+              >
+                <span>✕</span> VOLVER A LA VISTA TOTAL (ESC)
+              </button>
+            </div>
+          </aside>
+        )}
       </div>
 
       {/* BARRA INFERIOR DE TELEMETRÍA REGIONAL CAMMESA */}
@@ -3824,152 +4496,6 @@ export const PrototypeDagre: React.FC = () => {
         </footer>
       )}
 
-      {/* MODAL FIJO EN PANTALLA INDEPENDIENTE DEL ZOOM (SÓLO PARA ESTACIONES) */}
-      {selectedNode && (
-        <div
-          onClick={closeModal}
-          style={{
-            position: 'fixed',
-            inset: 0,
-            backgroundColor: 'rgba(22, 24, 26, 0.52)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            padding: '14px',
-            zIndex: 9999
-          }}
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            style={{
-              width: '100%',
-              maxWidth: '420px',
-              maxHeight: '86dvh',
-              backgroundColor: '#FAF8F3',
-              border: '2px solid #222426',
-              display: 'flex',
-              flexDirection: 'column',
-              overflow: 'hidden'
-            }}
-          >
-            <div
-              style={{
-                backgroundColor: '#EAE4D7',
-                borderBottom: '1px solid #C8C2B4',
-                padding: '10px 14px',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                gap: '8px'
-              }}
-            >
-              <span
-                style={{
-                  backgroundColor: '#222426',
-                  color: '#FAF8F3',
-                  fontFamily: '"IBM Plex Mono", monospace',
-                  fontSize: '10px',
-                  fontWeight: 700,
-                  padding: '3px 7px',
-                  textTransform: 'uppercase'
-                }}
-              >
-                {selectedNode.typeName}
-              </span>
-              <button
-                onClick={closeModal}
-                style={{
-                  backgroundColor: '#FAF8F3',
-                  border: '1.5px solid #222426',
-                  padding: '4px 10px',
-                  fontFamily: '"IBM Plex Mono", monospace',
-                  fontSize: '12px',
-                  fontWeight: 700,
-                  cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '4px'
-                }}
-              >
-                <X className="w-4 h-4" /> CERRAR
-              </button>
-            </div>
-
-            <div style={{ padding: '16px', overflowY: 'auto' }}>
-              <h3 style={{ fontSize: '18px', fontWeight: 700, color: '#222426' }}>
-                {selectedNode.label}
-              </h3>
-              <div
-                style={{
-                  fontFamily: '"IBM Plex Mono", monospace',
-                  fontSize: '11px',
-                  color: '#68655E',
-                  marginTop: '2px',
-                  marginBottom: '14px'
-                }}
-              >
-                {selectedNode.code} · {selectedNode.provincia.toUpperCase()} ({selectedNode.region})
-              </div>
-
-              <div
-                style={{
-                  display: 'grid',
-                  gridTemplateColumns: '1fr 1fr',
-                  gap: '8px',
-                  fontFamily: '"IBM Plex Mono", monospace'
-                }}
-              >
-                <div style={{ backgroundColor: '#F3EFE6', border: '1px solid #C8C2B4', padding: '8px 10px' }}>
-                  <span style={{ fontSize: '9.5px', color: '#68655E', display: 'block' }}>
-                    {selectedNode.role === 'GEN'
-                      ? 'POTENCIA INSTALADA'
-                      : selectedNode.role === 'DIST' || selectedNode.role === 'COOP'
-                      ? 'DEMANDA LOCAL ESTIMADA'
-                      : 'POTENCIA DE TRANSFORMACIÓN'}
-                  </span>
-                  <strong style={{ fontSize: '14px', color: '#222426' }}>{selectedNode.powerMw}</strong>
-                </div>
-
-                <div style={{ backgroundColor: '#F3EFE6', border: '1px solid #C8C2B4', padding: '8px 10px' }}>
-                  <span style={{ fontSize: '9.5px', color: '#68655E', display: 'block' }}>CORRIENTE EN VIVO</span>
-                  <strong style={{ fontSize: '14px', color: '#222426' }}>
-                    {formatMilesEnteros(selectedNode.amperes)} A
-                  </strong>
-                </div>
-
-                <div style={{ backgroundColor: '#F3EFE6', border: '1px solid #C8C2B4', padding: '8px 10px' }}>
-                  <span style={{ fontSize: '9.5px', color: '#68655E', display: 'block' }}>TENSIÓN NOMINAL</span>
-                  <strong style={{ fontSize: '14px', color: '#222426' }}>{selectedNode.kvText}</strong>
-                </div>
-
-                <div style={{ backgroundColor: '#F3EFE6', border: '1px solid #C8C2B4', padding: '8px 10px' }}>
-                  <span style={{ fontSize: '9.5px', color: '#68655E', display: 'block' }}>AGENTE / EMPRESA</span>
-                  <strong style={{ fontSize: '12px', color: '#222426' }}>{selectedNode.operator}</strong>
-                </div>
-              </div>
-            </div>
-
-            <div style={{ padding: '10px 14px', backgroundColor: '#EAE4D7', borderTop: '1px solid #C8C2B4' }}>
-              <button
-                onClick={closeModal}
-                style={{
-                  width: '100%',
-                  padding: '9px',
-                  backgroundColor: '#222426',
-                  color: '#FAF8F3',
-                  border: 'none',
-                  fontFamily: '"IBM Plex Mono", monospace',
-                  fontSize: '12px',
-                  fontWeight: 700,
-                  cursor: 'pointer'
-                }}
-              >
-                CERRAR VENTANA
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 };
