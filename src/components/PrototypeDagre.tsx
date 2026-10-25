@@ -2115,7 +2115,7 @@ const FlowSceneInner: React.FC<{
     // 2b. Cables activos: trazado base continuo con saturación y contraste total (máx 5 llamadas)
     if (!selectedEdge && !selectedNode && compiledPaths.activeBase2D.length > 0) {
       ctx.setLineDash([]);
-      ctx.globalAlpha = 0.92;
+      ctx.globalAlpha = animateFlow ? 0.38 : 0.92;
       for (let i = 0; i < compiledPaths.activeBase2D.length; i++) {
         const b = compiledPaths.activeBase2D[i];
         ctx.strokeStyle = b.cfg.color;
@@ -2128,12 +2128,12 @@ const FlowSceneInner: React.FC<{
     if (!selectedEdge && !selectedNode && animateFlow && compiledPaths.activeAnim2D.length > 0) {
       if (vp.zoom < 0.65) {
         // En vista macro o zoom medio: trazado animado agrupado por tensión y velocidad (máx 15 llamadas de GPU en total)
-        ctx.globalAlpha = 0.98;
+        ctx.globalAlpha = 0.96;
         for (let i = 0; i < compiledPaths.activeAnim2D.length; i++) {
           const a = compiledPaths.activeAnim2D[i];
           const dashLen = Math.max(8, Math.round(a.dash[0] * cableScale));
           const gapLen = Math.max(6, Math.round(a.dash[1] * cableScale));
-          ctx.strokeStyle = '#FAF8F3';
+          ctx.strokeStyle = a.cfg.color;
           ctx.lineWidth = Math.max(1.8 * cableScale, a.cfg.width * (isMap ? 0.75 : 0.65) * cableScale);
           ctx.setLineDash([dashLen, gapLen]);
           const speedPx = SPEED_PX_PER_SEC[a.speed] * cableScale;
@@ -2142,7 +2142,7 @@ const FlowSceneInner: React.FC<{
         }
       } else {
         // En zoom cercano: viewport culling estricto (solo se animan los ~10-25 cables visibles en la pantalla)
-        ctx.globalAlpha = 0.98;
+        ctx.globalAlpha = 0.96;
         for (let i = 0; i < activeCables.length; i++) {
           const cg = activeCables[i];
           if (!cableCrossesViewport(cg, viewMinX, viewMaxX, viewMinY, viewMaxY)) {
@@ -2155,8 +2155,8 @@ const FlowSceneInner: React.FC<{
           ctx.setLineDash([dashLen, gapLen]);
           const speedPx = SPEED_PX_PER_SEC[cg.speedBucket];
           ctx.lineDashOffset = -(dashPhaseRef.current * speedPx) % (dashLen + gapLen);
-          ctx.lineWidth = Math.max(1.8, cableWidth * 0.65);
-          ctx.strokeStyle = '#FAF8F3';
+          ctx.lineWidth = cableWidth;
+          ctx.strokeStyle = cfg.color;
           ctx.stroke(cg.path2D);
         }
       }
@@ -2629,18 +2629,20 @@ const FlowSceneInner: React.FC<{
       ctx.stroke();
 
       // Flujo animado
-      const dashLen = Math.max(10, Math.round(cableW * 2.8));
-      const gapLen = Math.max(8, Math.round(cableW * 2.0));
-      ctx.beginPath();
-      ctx.moveTo(sx, sy);
-      ctx.lineTo(tx, ty);
-      ctx.strokeStyle = '#FAF8F3';
-      ctx.lineWidth = Math.max(2, cableW * 0.55);
-      ctx.setLineDash([dashLen, gapLen]);
-      const speedPx = (SPEED_PX_PER_SEC[getSpeedBucket(selectedEdge.amperes)] || 40) * scale;
-      ctx.lineDashOffset = -(dashPhaseRef.current * speedPx) % (dashLen + gapLen);
-      ctx.stroke();
-      ctx.setLineDash([]);
+      if (animateFlow) {
+        const dashLen = Math.max(10, Math.round(cableW * 2.8));
+        const gapLen = Math.max(8, Math.round(cableW * 2.0));
+        ctx.beginPath();
+        ctx.moveTo(sx, sy);
+        ctx.lineTo(tx, ty);
+        ctx.strokeStyle = vCfg.color;
+        ctx.lineWidth = Math.max(2, cableW * 0.85);
+        ctx.setLineDash([dashLen, gapLen]);
+        const speedPx = (SPEED_PX_PER_SEC[getSpeedBucket(selectedEdge.amperes)] || 40) * scale;
+        ctx.lineDashOffset = -(dashPhaseRef.current * speedPx) % (dashLen + gapLen);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
 
       // Flecha direccional en el medio
       const midX = (sx + tx) / 2;
@@ -3078,10 +3080,18 @@ const FlowSceneInner: React.FC<{
 
     let animId: number;
     let lastTs = performance.now();
+    let lastRenderTs = performance.now();
 
     const tick = (now: number) => {
+      // Limitar a ~38 fps para optimizar GPU y batería en móviles y pantallas de 90/120Hz
+      if (now - lastRenderTs < 26) {
+        animId = requestAnimationFrame(tick);
+        return;
+      }
       const dt = (now - lastTs) / 1000;
       lastTs = now;
+      lastRenderTs = now;
+
       if (!isPanningRef.current) {
         dashPhaseRef.current += dt;
         renderCanvasFrame();
@@ -3500,7 +3510,7 @@ export const PrototypeDagre: React.FC = () => {
   const [filterTech, setFilterTech] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [showFullWfs, setShowFullWfs] = useState<boolean>(false);
-  const [animateFlow, setAnimateFlow] = useState<boolean>(true);
+  const [animateFlow, setAnimateFlow] = useState<boolean>(false);
   const [counts, setCounts] = useState<{ nodes: number; edges: number }>({ nodes: 830, edges: 1122 });
   const [selectedNode, setSelectedNode] = useState<GridNodeData | null>(null);
   const [selectedEdge, setSelectedEdge] = useState<GridEdgeData | null>(null);
@@ -3996,350 +4006,36 @@ export const PrototypeDagre: React.FC = () => {
           />
         </ReactFlowProvider>
 
-        {/* TARJETA TÉCNICA FLOTANTE CUANDO SE SELECCIONA UN VÍNCULO (SIN BACKDROP BLOQUEANTE) */}
-        {selectedEdge && (
-          <aside
+        {/* BOTÓN DISCRETO PARA VOLVER A LA VISTA TOTAL (SIN MODAL DE INFORMACIÓN) */}
+        {(selectedEdge || selectedNode) && (
+          <button
+            onClick={() => {
+              setSelectedEdge(null);
+              setSelectedNode(null);
+            }}
+            title="Volver a la vista total (Esc)"
             style={{
               position: 'absolute',
               top: 14,
               right: 14,
-              width: '380px',
-              maxWidth: 'calc(100vw - 28px)',
-              backgroundColor: '#FAF8F3',
-              border: '2px solid #222426',
-              boxShadow: '0 8px 24px rgba(0,0,0,0.18)',
-              zIndex: 1000,
+              backgroundColor: '#222426',
+              color: '#FAF8F3',
+              border: '1px solid #FAF8F3',
+              borderRadius: '4px',
+              padding: '7px 12px',
+              fontSize: '11px',
+              fontWeight: 700,
+              cursor: 'pointer',
               display: 'flex',
-              flexDirection: 'column',
-              fontFamily: '"IBM Plex Sans", sans-serif'
+              alignItems: 'center',
+              gap: '6px',
+              fontFamily: '"IBM Plex Mono", monospace',
+              boxShadow: '0 4px 12px rgba(0,0,0,0.25)',
+              zIndex: 1000
             }}
           >
-            {/* Cabecera */}
-            <div
-              style={{
-                backgroundColor: '#222426',
-                color: '#FAF8F3',
-                padding: '8px 12px',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                gap: '8px'
-              }}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <span
-                  style={{
-                    backgroundColor: VOLTAGE_CONFIG[normalizeKvKey(selectedEdge.kv)]?.color || '#2A5C8A',
-                    color: '#FFF',
-                    fontSize: '11px',
-                    fontWeight: 800,
-                    padding: '2px 7px',
-                    fontFamily: '"IBM Plex Mono", monospace'
-                  }}
-                >
-                  {VOLTAGE_CONFIG[normalizeKvKey(selectedEdge.kv)]?.displayKv || `${selectedEdge.kv} kV`}
-                </span>
-                <span style={{ fontSize: '11.5px', fontWeight: 700, letterSpacing: '0.04em' }}>
-                  VÍNCULO AISLADO
-                </span>
-              </div>
-              <button
-                onClick={() => setSelectedEdge(null)}
-                title="Volver a la vista total (Esc)"
-                style={{
-                  background: 'none',
-                  border: 'none',
-                  color: '#FAF8F3',
-                  fontSize: '18px',
-                  fontWeight: 700,
-                  cursor: 'pointer',
-                  padding: '0 4px',
-                  lineHeight: 1
-                }}
-              >
-                ✕
-              </button>
-            </div>
-
-            {/* Cuerpo */}
-            <div style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-              <div
-                style={{
-                  backgroundColor: '#F3EFE6',
-                  border: '1px solid #D6D0C4',
-                  padding: '8px 10px',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '6px'
-                }}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <span style={{ fontSize: '10px', fontWeight: 700, color: '#68655E', width: '56px' }}>ORIGEN:</span>
-                  <span style={{ fontSize: '12px', fontWeight: 700, color: '#222426' }}>{selectedEdge.fromName}</span>
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <span style={{ fontSize: '10px', fontWeight: 700, color: '#68655E', width: '56px' }}>DESTINO:</span>
-                  <span style={{ fontSize: '12px', fontWeight: 700, color: '#222426' }}>{selectedEdge.toName}</span>
-                </div>
-              </div>
-
-              <div
-                style={{
-                  display: 'grid',
-                  gridTemplateColumns: '1fr 1fr',
-                  gap: '6px',
-                  fontFamily: '"IBM Plex Mono", monospace',
-                  fontSize: '11px'
-                }}
-              >
-                <div style={{ backgroundColor: '#FAF8F3', border: '1px solid #E2DCD2', padding: '6px 8px' }}>
-                  <div style={{ fontSize: '9px', color: '#68655E', fontWeight: 600 }}>CORRIENTE EN LÍNEA</div>
-                  <div style={{ fontSize: '13px', fontWeight: 700, color: '#222426' }}>
-                    {formatMilesEnteros(selectedEdge.amperes)} A
-                  </div>
-                </div>
-                <div style={{ backgroundColor: '#FAF8F3', border: '1px solid #E2DCD2', padding: '6px 8px' }}>
-                  <div style={{ fontSize: '9px', color: '#68655E', fontWeight: 600 }}>POTENCIA EST.</div>
-                  <div style={{ fontSize: '13px', fontWeight: 700, color: '#222426' }}>
-                    {selectedEdge.mw || '—'}
-                  </div>
-                </div>
-                <div style={{ backgroundColor: '#FAF8F3', border: '1px solid #E2DCD2', padding: '6px 8px' }}>
-                  <div style={{ fontSize: '9px', color: '#68655E', fontWeight: 600 }}>TERNADO</div>
-                  <div style={{ fontSize: '12px', fontWeight: 700, color: '#222426' }}>
-                    {selectedEdge.parallelCount > 1
-                      ? `${selectedEdge.parallelCount} ternas paralelas`
-                      : '1 terna simple'}
-                  </div>
-                </div>
-                <div style={{ backgroundColor: '#FAF8F3', border: '1px solid #E2DCD2', padding: '6px 8px' }}>
-                  <div style={{ fontSize: '9px', color: '#68655E', fontWeight: 600 }}>REGIÓN ELÉCTRICA</div>
-                  <div style={{ fontSize: '13px', fontWeight: 700, color: '#222426' }}>
-                    {selectedEdge.region || 'SADI'}
-                  </div>
-                </div>
-              </div>
-
-              {selectedEdge.empresa && (
-                <div
-                  style={{
-                    fontSize: '10px',
-                    color: '#68655E',
-                    borderTop: '1px solid #E2DCD2',
-                    paddingTop: '6px',
-                    display: 'flex',
-                    justifyContent: 'space-between'
-                  }}
-                >
-                  <span style={{ fontWeight: 600 }}>TRANSPORTISTA:</span>
-                  <span style={{ fontWeight: 700, color: '#222426' }}>{selectedEdge.empresa}</span>
-                </div>
-              )}
-
-              <button
-                onClick={() => setSelectedEdge(null)}
-                style={{
-                  marginTop: '4px',
-                  backgroundColor: '#222426',
-                  color: '#FAF8F3',
-                  border: 'none',
-                  padding: '8px 12px',
-                  fontSize: '11px',
-                  fontWeight: 700,
-                  cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: '6px',
-                  fontFamily: '"IBM Plex Mono", monospace'
-                }}
-              >
-                <span>✕</span> VOLVER A LA VISTA TOTAL (ESC)
-              </button>
-            </div>
-          </aside>
-        )}
-
-        {/* TARJETA TÉCNICA FLOTANTE CUANDO SE SELECCIONA UNA ESTACIÓN (NAVEGACIÓN 1-SALTO) */}
-        {selectedNode && (
-          <aside
-            style={{
-              position: 'absolute',
-              top: 14,
-              right: 14,
-              width: '390px',
-              maxWidth: 'calc(100vw - 28px)',
-              backgroundColor: '#FAF8F3',
-              border: '2px solid #222426',
-              boxShadow: '0 8px 24px rgba(0,0,0,0.18)',
-              zIndex: 1000,
-              display: 'flex',
-              flexDirection: 'column',
-              fontFamily: '"IBM Plex Sans", sans-serif'
-            }}
-          >
-            {/* Cabecera */}
-            <div
-              style={{
-                backgroundColor: '#222426',
-                color: '#FAF8F3',
-                padding: '8px 12px',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                gap: '8px'
-              }}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <span
-                  style={{
-                    backgroundColor: '#FAF8F3',
-                    color: '#222426',
-                    fontFamily: '"IBM Plex Mono", monospace',
-                    fontSize: '10px',
-                    fontWeight: 700,
-                    padding: '2px 6px'
-                  }}
-                >
-                  {selectedNode.typeName || 'ESTACIÓN'}
-                </span>
-                <span
-                  style={{
-                    fontSize: '11px',
-                    fontWeight: 700,
-                    letterSpacing: '0.04em',
-                    fontFamily: '"IBM Plex Mono", monospace'
-                  }}
-                >
-                  NAVEGACIÓN 1-SALTO
-                </span>
-              </div>
-              <button
-                onClick={() => setSelectedNode(null)}
-                title="Cerrar (Escape)"
-                style={{
-                  background: 'transparent',
-                  border: 'none',
-                  color: '#FAF8F3',
-                  fontSize: '16px',
-                  fontWeight: 700,
-                  cursor: 'pointer',
-                  padding: '0 4px',
-                  lineHeight: 1
-                }}
-              >
-                ✕
-              </button>
-            </div>
-
-            {/* Cuerpo */}
-            <div style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-              <div>
-                <h3
-                  style={{
-                    fontSize: '16px',
-                    fontWeight: 700,
-                    color: '#222426',
-                    margin: 0,
-                    lineHeight: 1.2
-                  }}
-                >
-                  {selectedNode.label}
-                </h3>
-                <div
-                  style={{
-                    fontFamily: '"IBM Plex Mono", monospace',
-                    fontSize: '10.5px',
-                    color: '#68655E',
-                    marginTop: '2px'
-                  }}
-                >
-                  {selectedNode.code} · {selectedNode.provincia.toUpperCase()} ({selectedNode.region})
-                </div>
-              </div>
-
-              <div
-                style={{
-                  display: 'grid',
-                  gridTemplateColumns: '1fr 1fr',
-                  gap: '6px',
-                  fontFamily: '"IBM Plex Mono", monospace'
-                }}
-              >
-                <div style={{ backgroundColor: '#FAF8F3', border: '1px solid #E2DCD2', padding: '6px 8px' }}>
-                  <div style={{ fontSize: '9px', color: '#68655E', fontWeight: 600 }}>
-                    {selectedNode.role === 'GEN'
-                      ? 'POTENCIA INSTALADA'
-                      : selectedNode.role === 'DIST' || selectedNode.role === 'COOP'
-                      ? 'DEMANDA ESTIMADA'
-                      : 'TRANSFORMACIÓN'}
-                  </div>
-                  <div style={{ fontSize: '13px', fontWeight: 700, color: '#222426' }}>
-                    {selectedNode.powerMw}
-                  </div>
-                </div>
-
-                <div style={{ backgroundColor: '#FAF8F3', border: '1px solid #E2DCD2', padding: '6px 8px' }}>
-                  <div style={{ fontSize: '9px', color: '#68655E', fontWeight: 600 }}>CORRIENTE EN VIVO</div>
-                  <div style={{ fontSize: '13px', fontWeight: 700, color: '#222426' }}>
-                    {formatMilesEnteros(selectedNode.amperes)} A
-                  </div>
-                </div>
-
-                <div style={{ backgroundColor: '#FAF8F3', border: '1px solid #E2DCD2', padding: '6px 8px' }}>
-                  <div style={{ fontSize: '9px', color: '#68655E', fontWeight: 600 }}>TENSIÓN NOMINAL</div>
-                  <div style={{ fontSize: '13px', fontWeight: 700, color: '#222426' }}>
-                    {selectedNode.kvText}
-                  </div>
-                </div>
-
-                <div style={{ backgroundColor: '#FAF8F3', border: '1px solid #E2DCD2', padding: '6px 8px' }}>
-                  <div style={{ fontSize: '9px', color: '#68655E', fontWeight: 600 }}>AGENTE / OPERADOR</div>
-                  <div style={{ fontSize: '11px', fontWeight: 700, color: '#222426', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                    {selectedNode.operator}
-                  </div>
-                </div>
-              </div>
-
-              <div
-                style={{
-                  backgroundColor: '#ECE8DE',
-                  border: '1px solid #D5CEBF',
-                  padding: '6px 8px',
-                  fontSize: '10px',
-                  fontFamily: '"IBM Plex Mono", monospace',
-                  color: '#44413B',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '6px'
-                }}
-              >
-                <span>💡</span>
-                <span>Haga clic en cualquier estación conectada para saltar y seguir el camino.</span>
-              </div>
-
-              <button
-                onClick={() => setSelectedNode(null)}
-                style={{
-                  marginTop: '2px',
-                  backgroundColor: '#222426',
-                  color: '#FAF8F3',
-                  border: 'none',
-                  padding: '8px 12px',
-                  fontSize: '11px',
-                  fontWeight: 700,
-                  cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: '6px',
-                  fontFamily: '"IBM Plex Mono", monospace'
-                }}
-              >
-                <span>✕</span> VOLVER A LA VISTA TOTAL (ESC)
-              </button>
-            </div>
-          </aside>
+            <span>✕</span> VOLVER A LA VISTA TOTAL
+          </button>
         )}
       </div>
 
