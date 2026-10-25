@@ -886,64 +886,32 @@ function computeLayoutAndBatchedCables(
     };
 
     // ------------------------------------------------------------------------
-    // PISO 1: CENTRALES GENERADORAS (474 nodos, arriba de todo)
-    // Sub-bloques: 500 kV -> 220 kV -> 132 kV -> 33 kV
+    // PLANO DE BARRAS: CASCADA FÍSICA Y ELÉCTRICA SADI POR NIVELES DE TENSIÓN
+    // Organización por niveles reales del sistema:
+    //   NIVEL 1 (500 kV): Centrales 500 kV -> BARRA TRONCAL 500 kV -> EETT 500 kV -> BARRA ENLACE
+    //   NIVEL 2 (220 kV): Centrales 220 kV -> BARRA TRONCAL 220 kV -> EETT 220 kV -> BARRA ENLACE
+    //   NIVEL 3 (132 kV): Centrales 132 kV -> BARRA SUBTRANSMISIÓN 132 kV -> EETT 132 kV -> BARRA ENLACE
+    //   NIVEL 4 (33 kV):  Centrales 33 kV -> BARRA DISTRIBUCIÓN 33 kV -> Distribuidoras -> BARRA MEDIA TENSIÓN
+    //   NIVEL 5 (13,2 kV): BARRA COOPERATIVAS 13,2 kV -> 580 Cooperativas
+    // Cada barra tiene conductores de inyección desde arriba Y conductores de salida hacia abajo.
+    // Cero barras muertas, cero extremos huérfanos. Flujo físico y continuo garantizado.
     // ------------------------------------------------------------------------
-    interface GenGroup {
-      id: string;
-      kv: number;
-      title: string;
-      subtitle: string;
-      nodes: GridNodeData[];
-    }
 
-    const genGroups: GenGroup[] = [
-      {
-        id: 'GEN_500',
-        kv: 500,
-        title: '⚡ BARRA COLECTORA DE GENERACIÓN 500 kV (EXTRA ALTA TENSIÓN)',
-        subtitle: 'Inyección de Centrales 500 kV (Yacyretá, Atucha II, Salto Grande, Chocón, Costanera)',
-        nodes: masterNodes
-          .filter((n) => n.role === 'GEN' && n.voltageKv >= 500)
-          .sort((a, b) => (REGION_ORDER[a.region] ?? 4) - (REGION_ORDER[b.region] ?? 4))
-      },
-      {
-        id: 'GEN_220',
-        kv: 220,
-        title: '⚡ BARRA COLECTORA DE GENERACIÓN 220 kV (ALTA TENSIÓN TRONCAL)',
-        subtitle: 'Inyección de Centrales Térmicas, Hidroeléctricas y Complejos Renovables 220 kV',
-        nodes: masterNodes
-          .filter((n) => n.role === 'GEN' && n.voltageKv >= 220 && n.voltageKv < 500)
-          .sort((a, b) => (REGION_ORDER[a.region] ?? 4) - (REGION_ORDER[b.region] ?? 4))
-      },
-      {
-        id: 'GEN_132',
-        kv: 132,
-        title: '⚡ BARRA COLECTORA DE GENERACIÓN 132 kV (SUBTRANSMISIÓN)',
-        subtitle: 'Inyección de 183 Centrales Térmicas y Renovables Conectadas en Redes de 132 kV',
-        nodes: masterNodes
-          .filter((n) => n.role === 'GEN' && n.voltageKv >= 132 && n.voltageKv < 220)
-          .sort((a, b) => (REGION_ORDER[a.region] ?? 4) - (REGION_ORDER[b.region] ?? 4))
-      },
-      {
-        id: 'GEN_33',
-        kv: 33,
-        title: '⚡ BARRA COLECTORA DE GENERACIÓN 33 kV (MEDIA TENSIÓN)',
-        subtitle: 'Inyección de Centrales Térmicas Locales y Parques Solares/Eólicos en Media Tensión',
-        nodes: masterNodes
-          .filter((n) => n.role === 'GEN' && n.voltageKv < 132)
-          .sort((a, b) => (REGION_ORDER[a.region] ?? 4) - (REGION_ORDER[b.region] ?? 4))
-      }
-    ];
-
-    genGroups.forEach((gg) => {
-      if (gg.nodes.length === 0) return;
-      const numRows = Math.ceil(gg.nodes.length / maxCols);
+    // Helper para generar una sección de Generación que inyecta hacia abajo en una barra
+    const renderGenSection = (
+      nodes: GridNodeData[],
+      busId: string,
+      busTitle: string,
+      busSubtitle: string,
+      busKv: number
+    ) => {
+      if (nodes.length === 0) return;
+      const numRows = Math.ceil(nodes.length / maxCols);
       const rowPositions: { rowY: number; offsetLeft: number; startIdx: number; endIdx: number }[] = [];
 
       for (let sr = 0; sr < numRows; sr++) {
         const startIdx = sr * maxCols;
-        const endIdx = Math.min(gg.nodes.length, (sr + 1) * maxCols);
+        const endIdx = Math.min(nodes.length, (sr + 1) * maxCols);
         const count = endIdx - startIdx;
         const rowWidth = count * COL_PITCH - COL_GAP;
         const offsetLeft = Math.floor((diagramW - rowWidth) / 2);
@@ -951,7 +919,7 @@ function computeLayoutAndBatchedCables(
         rowPositions.push({ rowY, offsetLeft, startIdx, endIdx });
 
         for (let i = startIdx; i < endIdx; i++) {
-          const n = gg.nodes[i];
+          const n = nodes[i];
           const col = i - startIdx;
           const nodeX = offsetLeft + col * COL_PITCH;
           positions.set(n.uid, { x: nodeX, y: rowY });
@@ -960,21 +928,21 @@ function computeLayoutAndBatchedCables(
       }
 
       const busY = currentY + 36;
-      createTrunkBus(`BUS_${gg.id}`, busY, gg.title, gg.subtitle, gg.kv);
+      createTrunkBus(busId, busY, busTitle, busSubtitle, busKv);
 
       for (let sr = 0; sr < numRows; sr++) {
         const { rowY, offsetLeft, startIdx, endIdx } = rowPositions[sr];
         const isBottomRow = sr === numRows - 1;
 
         for (let i = startIdx; i < endIdx; i++) {
-          const n = gg.nodes[i];
+          const n = nodes[i];
           const col = i - startIdx;
           const nodeX = offsetLeft + col * COL_PITCH;
           const pinX = nodeX + HALF_BOX;
           const outY = rowY + BOX_SIZE;
 
           const isNodeDimmed = !illuminatedNodeUids.has(n.uid);
-          const isDimmed = isNodeDimmed || (filterKv !== null && filterKv !== gg.kv);
+          const isDimmed = isNodeDimmed || (filterKv !== null && filterKv !== busKv);
           const factor = getRegionFactor(n.region);
           const liveAmps = Math.round(n.amperes * factor);
           const speed = getSpeedBucket(liveAmps);
@@ -995,8 +963,8 @@ function computeLayoutAndBatchedCables(
           registerSegment(
             `FEED_${n.uid}`,
             n.uid,
-            `BUS_${gg.id}`,
-            gg.kv,
+            busId,
+            busKv,
             liveAmps,
             `Inyección ${n.label}`,
             speed,
@@ -1007,78 +975,28 @@ function computeLayoutAndBatchedCables(
         }
       }
 
-      currentY = busY + 80;
-    });
+      currentY = busY + 70;
+    };
 
-    currentY += 20;
-
-    // ------------------------------------------------------------------------
-    // PISO 2: TRANSFORMACIÓN Y TRANSPORTE (323 nodos, al centro)
-    // ETs 500 kV -> ETs 220 kV -> ETs 132 kV
-    // ------------------------------------------------------------------------
-    interface EtGroup {
-      id: string;
-      inKv: number;
-      outKv: number;
-      inTitle: string;
-      inSubtitle: string;
-      outTitle: string;
-      outSubtitle: string;
-      nodes: GridNodeData[];
-    }
-
-    const etGroups: EtGroup[] = [
-      {
-        id: 'ET_500',
-        inKv: 500,
-        outKv: 220,
-        inTitle: '⚡ BARRA TRONCAL NACIONAL 500 kV (ALIMENTACIÓN EETT)',
-        inSubtitle: 'Entrada a 59 Estaciones Transformadoras 500 kV del SADI',
-        outTitle: '⚡ BARRA DE ENLACE Y TRANSFORMACIÓN 220 kV (DESDE 500 kV)',
-        outSubtitle: 'Salida de Reducción de Extra Alta Tensión 500 kV a Alta Tensión 220 kV',
-        nodes: masterNodes
-          .filter((n) => n.role === 'ET500')
-          .sort((a, b) => (REGION_ORDER[a.region] ?? 4) - (REGION_ORDER[b.region] ?? 4))
-      },
-      {
-        id: 'ET_220',
-        inKv: 220,
-        outKv: 132,
-        inTitle: '⚡ BARRA TRONCAL NACIONAL 220 kV (ALIMENTACIÓN EETT)',
-        inSubtitle: 'Entrada a 15 Estaciones Transformadoras 220 kV de Transporte Troncal',
-        outTitle: '⚡ BARRA DE SUBTRANSMISIÓN REGIONAL 132 kV (DESDE 220 kV)',
-        outSubtitle: 'Salida de Reducción de Alta Tensión 220 kV a Distribución Troncal 132 kV',
-        nodes: masterNodes
-          .filter((n) => n.role === 'ET132' && n.voltageKv >= 220)
-          .sort((a, b) => (REGION_ORDER[a.region] ?? 4) - (REGION_ORDER[b.region] ?? 4))
-      },
-      {
-        id: 'ET_132',
-        inKv: 132,
-        outKv: 33,
-        inTitle: '⚡ BARRA DE SUBTRANSMISIÓN REGIONAL 132 kV (ALIMENTACIÓN EETT)',
-        inSubtitle: 'Entrada a 249 Estaciones Transformadoras de Transporte Regional',
-        outTitle: '⚡ BARRA DE DISTRIBUCIÓN URBANA Y RURAL 33 kV',
-        outSubtitle: 'Salida de Reducción 132/33 kV hacia Redes de Distribución Provincial',
-        nodes: masterNodes
-          .filter((n) => n.role === 'ET132' && n.voltageKv < 220)
-          .sort((a, b) => (REGION_ORDER[a.region] ?? 4) - (REGION_ORDER[b.region] ?? 4))
-      }
-    ];
-
-    etGroups.forEach((eg) => {
-      if (eg.nodes.length === 0) return;
-      const numRows = Math.ceil(eg.nodes.length / maxCols);
-
-      const inBusY = currentY + 36;
-      createTrunkBus(`BUS_IN_${eg.id}`, inBusY, eg.inTitle, eg.inSubtitle, eg.inKv);
-      currentY = inBusY + 70;
+    // Helper para generar una sección de Estaciones Transformadoras que recibe del bus superior y entrega al bus inferior
+    const renderSubstationSection = (
+      nodes: GridNodeData[],
+      inBusId: string,
+      inKv: number,
+      outBusId: string,
+      outBusTitle: string,
+      outBusSubtitle: string,
+      outKv: number
+    ) => {
+      if (nodes.length === 0) return;
+      const numRows = Math.ceil(nodes.length / maxCols);
+      const inBusY = busYMap.get(inBusId) || (currentY - 70);
 
       const rowPositions: { rowY: number; offsetLeft: number; startIdx: number; endIdx: number }[] = [];
 
       for (let sr = 0; sr < numRows; sr++) {
         const startIdx = sr * maxCols;
-        const endIdx = Math.min(eg.nodes.length, (sr + 1) * maxCols);
+        const endIdx = Math.min(nodes.length, (sr + 1) * maxCols);
         const count = endIdx - startIdx;
         const rowWidth = count * COL_PITCH - COL_GAP;
         const offsetLeft = Math.floor((diagramW - rowWidth) / 2);
@@ -1086,7 +1004,7 @@ function computeLayoutAndBatchedCables(
         rowPositions.push({ rowY, offsetLeft, startIdx, endIdx });
 
         for (let i = startIdx; i < endIdx; i++) {
-          const n = eg.nodes[i];
+          const n = nodes[i];
           const col = i - startIdx;
           const nodeX = offsetLeft + col * COL_PITCH;
           positions.set(n.uid, { x: nodeX, y: rowY });
@@ -1095,7 +1013,7 @@ function computeLayoutAndBatchedCables(
       }
 
       const outBusY = currentY + 36;
-      createTrunkBus(`BUS_OUT_${eg.id}`, outBusY, eg.outTitle, eg.outSubtitle, eg.outKv);
+      createTrunkBus(outBusId, outBusY, outBusTitle, outBusSubtitle, outKv);
 
       for (let sr = 0; sr < numRows; sr++) {
         const { rowY, offsetLeft, startIdx, endIdx } = rowPositions[sr];
@@ -1103,7 +1021,7 @@ function computeLayoutAndBatchedCables(
         const isBottomRow = sr === numRows - 1;
 
         for (let i = startIdx; i < endIdx; i++) {
-          const n = eg.nodes[i];
+          const n = nodes[i];
           const col = i - startIdx;
           const nodeX = offsetLeft + col * COL_PITCH;
           const pinX = nodeX + HALF_BOX;
@@ -1115,7 +1033,8 @@ function computeLayoutAndBatchedCables(
           const liveAmps = Math.round(n.amperes * factor);
           const speed = getSpeedBucket(liveAmps);
 
-          const isDimmedIn = isNodeDimmed || (filterKv !== null && filterKv !== eg.inKv);
+          // Entrada desde el bus superior
+          const isDimmedIn = isNodeDimmed || (filterKv !== null && filterKv !== inKv);
           let dIn = '';
           const ptsIn: [number, number][] = [];
 
@@ -1131,18 +1050,19 @@ function computeLayoutAndBatchedCables(
 
           registerSegment(
             `ET_IN_${n.uid}`,
-            `BUS_IN_${eg.id}`,
+            inBusId,
             n.uid,
-            eg.inKv,
+            inKv,
             liveAmps,
-            `Alimentación ${eg.inKv} kV ${n.label}`,
+            `Alimentación ${inKv} kV ${n.label}`,
             speed,
             dIn,
             ptsIn,
             isDimmedIn
           );
 
-          const isDimmedOut = isNodeDimmed || (filterKv !== null && filterKv !== eg.outKv);
+          // Salida hacia el bus inferior
+          const isDimmedOut = isNodeDimmed || (filterKv !== null && filterKv !== outKv);
           let dOut = '';
           const ptsOut: [number, number][] = [];
 
@@ -1159,10 +1079,10 @@ function computeLayoutAndBatchedCables(
           registerSegment(
             `ET_OUT_${n.uid}`,
             n.uid,
-            `BUS_OUT_${eg.id}`,
-            eg.outKv,
+            outBusId,
+            outKv,
             liveAmps,
-            `Salida ${eg.outKv} kV ${n.label}`,
+            `Salida ${outKv} kV ${n.label}`,
             speed,
             dOut,
             ptsOut,
@@ -1172,103 +1092,130 @@ function computeLayoutAndBatchedCables(
       }
 
       currentY = outBusY + 80;
-    });
+    };
 
-    currentY += 20;
+    // 1. NIVEL 500 kV: Extra Alta Tensión Troncal
+    const nodesGen500 = masterNodes
+      .filter((n) => n.role === 'GEN' && n.voltageKv >= 500)
+      .sort((a, b) => (REGION_ORDER[a.region] ?? 4) - (REGION_ORDER[b.region] ?? 4));
 
-    // ------------------------------------------------------------------------
-    // PISO 3: EMPRESAS DISTRIBUIDORAS PROVINCIALES (33 nodos, 1 fila)
-    // ------------------------------------------------------------------------
+    const nodesEt500 = masterNodes
+      .filter((n) => n.role === 'ET500')
+      .sort((a, b) => (REGION_ORDER[a.region] ?? 4) - (REGION_ORDER[b.region] ?? 4));
+
+    renderGenSection(
+      nodesGen500,
+      'BUS_GEN_500',
+      '⚡ BARRA COLECTORA DE GENERACIÓN 500 kV (EXTRA ALTA TENSIÓN)',
+      'Inyección de Centrales 500 kV (Yacyretá, Atucha II, Salto Grande, Chocón, Costanera)',
+      500
+    );
+
+    renderSubstationSection(
+      nodesEt500,
+      'BUS_GEN_500',
+      500,
+      'BUS_OUT_ET_500',
+      '⚡ BARRA DE ENLACE Y TRANSFORMACIÓN 500/220/132 kV',
+      'Salida de Reducción desde 500 kV hacia Red Troncal de 220 kV y Subtransmisión de 132 kV',
+      220
+    );
+
+    // 2. NIVEL 220 kV: Alta Tensión Troncal Regional
+    const nodesGen220 = masterNodes
+      .filter((n) => n.role === 'GEN' && n.voltageKv >= 220 && n.voltageKv < 500)
+      .sort((a, b) => (REGION_ORDER[a.region] ?? 4) - (REGION_ORDER[b.region] ?? 4));
+
+    const nodesEt220 = masterNodes
+      .filter((n) => n.role === 'ET132' && n.voltageKv >= 220)
+      .sort((a, b) => (REGION_ORDER[a.region] ?? 4) - (REGION_ORDER[b.region] ?? 4));
+
+    renderGenSection(
+      nodesGen220,
+      'BUS_GEN_220',
+      '⚡ BARRA TRONCAL 220 kV (ALTA TENSIÓN REGIONAL)',
+      'Inyección de Centrales Térmicas, Hidroeléctricas y Complejos Renovables 220 kV',
+      220
+    );
+
+    renderSubstationSection(
+      nodesEt220,
+      'BUS_GEN_220',
+      220,
+      'BUS_OUT_ET_220',
+      '⚡ BARRA DE ENLACE Y TRANSFORMACIÓN 220/132 kV',
+      'Salida de Reducción de Alta Tensión 220 kV a Subtransmisión 132 kV',
+      132
+    );
+
+    // 3. NIVEL 132 kV: Subtransmisión Provincial
+    const nodesGen132 = masterNodes
+      .filter((n) => n.role === 'GEN' && n.voltageKv >= 132 && n.voltageKv < 220)
+      .sort((a, b) => (REGION_ORDER[a.region] ?? 4) - (REGION_ORDER[b.region] ?? 4));
+
+    const nodesEt132 = masterNodes
+      .filter((n) => n.role === 'ET132' && n.voltageKv < 220)
+      .sort((a, b) => (REGION_ORDER[a.region] ?? 4) - (REGION_ORDER[b.region] ?? 4));
+
+    renderGenSection(
+      nodesGen132,
+      'BUS_GEN_132',
+      '⚡ BARRA DE SUBTRANSMISIÓN REGIONAL 132 kV',
+      'Inyección de Centrales Térmicas y Renovables Conectadas en Redes de 132 kV',
+      132
+    );
+
+    renderSubstationSection(
+      nodesEt132,
+      'BUS_GEN_132',
+      132,
+      'BUS_OUT_ET_132',
+      '⚡ BARRA DE ENLACE Y TRANSFORMACIÓN 132/33 kV',
+      'Salida de Reducción 132/33 kV hacia Redes de Distribución Provincial',
+      33
+    );
+
+    // 4. NIVEL 33 kV: Media Tensión Primaria y Distribuidoras
+    const nodesGen33 = masterNodes
+      .filter((n) => n.role === 'GEN' && n.voltageKv < 132)
+      .sort((a, b) => (REGION_ORDER[a.region] ?? 4) - (REGION_ORDER[b.region] ?? 4));
+
     const distNodes = masterNodes
       .filter((n) => n.role === 'DIST')
       .sort((a, b) => (REGION_ORDER[a.region] ?? 4) - (REGION_ORDER[b.region] ?? 4));
 
-    const busY_dist_in = currentY + 36;
-    createTrunkBus(
-      'BUS_DIST_IN_33',
-      busY_dist_in,
-      '⚡ BARRA DE ALIMENTACIÓN A DISTRIBUIDORAS PROVINCIALES 33 kV',
-      'Alimentación a las 33 Empresas Distribuidoras de Electricidad (Edenor, Edesur, EPEC, etc.)',
+    renderGenSection(
+      nodesGen33,
+      'BUS_GEN_33',
+      '⚡ BARRA COLECTORA DE GENERACIÓN 33 kV (MEDIA TENSIÓN)',
+      'Inyección de Centrales Térmicas Locales y Parques Solares/Eólicos en 33 kV',
       33
     );
-    currentY = busY_dist_in + 70;
 
-    const rowY_dist = currentY;
-    const busY_dist_out = rowY_dist + BOX_SIZE + 64;
+    renderSubstationSection(
+      distNodes,
+      'BUS_GEN_33',
+      33,
+      'BUS_DIST_OUT_13',
+      '⚡ BARRA DE ALIMENTACIÓN A COOPERATIVAS Y REDES RURALES 13,2 kV',
+      'Distribución de Media Tensión hacia Redes de Cooperativas Eléctricas',
+      13.2
+    );
 
-    if (distNodes.length > 0) {
-      const rowWidth = distNodes.length * COL_PITCH - COL_GAP;
-      const offsetLeft = Math.floor((diagramW - rowWidth) / 2);
+    // 5. NIVEL 13,2 kV: Cooperativas Eléctricas (580 nodos)
+    const coopNodes = masterNodes
+      .filter((n) => n.role === 'COOP')
+      .sort((a, b) => (REGION_ORDER[a.region] ?? 4) - (REGION_ORDER[b.region] ?? 4));
 
-      for (let i = 0; i < distNodes.length; i++) {
-        const n = distNodes[i];
-        const nodeX = offsetLeft + i * COL_PITCH;
-        positions.set(n.uid, { x: nodeX, y: rowY_dist });
-
-        const pinX = nodeX + HALF_BOX;
-        const inY = rowY_dist;
-        const outY = rowY_dist + BOX_SIZE;
-
-        const isNodeDimmed = !illuminatedNodeUids.has(n.uid);
-        const factor = getRegionFactor(n.region);
-        const liveAmps = Math.round(n.amperes * factor);
-        const speed = getSpeedBucket(liveAmps);
-
-        const isDimmedIn = isNodeDimmed || (filterKv !== null && filterKv !== 33);
-        const dIn = `M ${pinX.toFixed(1)},${busY_dist_in.toFixed(1)} L ${pinX.toFixed(1)},${inY.toFixed(1)}`;
-        registerSegment(
-          `DIST_IN_${n.uid}`,
-          'BUS_DIST_IN_33',
-          n.uid,
-          33,
-          liveAmps,
-          `Alimentación 33 kV ${n.label}`,
-          speed,
-          dIn,
-          [
-            [pinX, busY_dist_in],
-            [pinX, inY]
-          ],
-          isDimmedIn
-        );
-
-        const isDimmedOut = isNodeDimmed || (filterKv !== null && filterKv !== 13.2);
-        const dOut = `M ${pinX.toFixed(1)},${outY.toFixed(1)} L ${pinX.toFixed(1)},${busY_dist_out.toFixed(1)}`;
-        registerSegment(
-          `DIST_OUT_${n.uid}`,
-          n.uid,
-          'BUS_COOP_13',
-          13.2,
-          liveAmps,
-          `Distribución 13,2 kV ${n.label}`,
-          speed,
-          dOut,
-          [
-            [pinX, outY],
-            [pinX, busY_dist_out]
-          ],
-          isDimmedOut
-        );
-      }
-      currentY = rowY_dist + ROW_PITCH;
-    }
-
+    const busY_coop = currentY + 36;
     createTrunkBus(
       'BUS_COOP_13',
-      busY_dist_out,
+      busY_coop,
       '⚡ BARRA COLECTORA DE COOPERATIVAS ELÉCTRICAS 13,2 kV',
       'Distribución de Media Tensión hacia 580 Cooperativas de Servicios Públicos Urbanos y Rurales',
       13.2
     );
-
-    currentY = busY_dist_out + 80;
-
-    // ------------------------------------------------------------------------
-    // PISO 4: COOPERATIVAS ELÉCTRICAS (580 nodos, abajo de todo)
-    // ------------------------------------------------------------------------
-    const coopNodes = masterNodes
-      .filter((n) => n.role === 'COOP')
-      .sort((a, b) => (REGION_ORDER[a.region] ?? 4) - (REGION_ORDER[b.region] ?? 4));
+    currentY = busY_coop + 70;
 
     if (coopNodes.length > 0) {
       const numRows = Math.ceil(coopNodes.length / maxCols);
@@ -1300,13 +1247,13 @@ function computeLayoutAndBatchedCables(
           const pts: [number, number][] = [];
 
           if (isTopRow) {
-            d = `M ${pinX.toFixed(1)},${busY_dist_out.toFixed(1)} L ${pinX.toFixed(1)},${inY.toFixed(1)}`;
-            pts.push([pinX, busY_dist_out], [pinX, inY]);
+            d = `M ${pinX.toFixed(1)},${busY_coop.toFixed(1)} L ${pinX.toFixed(1)},${inY.toFixed(1)}`;
+            pts.push([pinX, busY_coop], [pinX, inY]);
           } else {
             const streetX = nodeX + BOX_SIZE + COL_GAP / 2;
             const midY = inY - 14;
-            d = `M ${streetX.toFixed(1)},${busY_dist_out.toFixed(1)} L ${streetX.toFixed(1)},${midY.toFixed(1)} L ${pinX.toFixed(1)},${midY.toFixed(1)} L ${pinX.toFixed(1)},${inY.toFixed(1)}`;
-            pts.push([streetX, busY_dist_out], [streetX, midY], [pinX, midY], [pinX, inY]);
+            d = `M ${streetX.toFixed(1)},${busY_coop.toFixed(1)} L ${streetX.toFixed(1)},${midY.toFixed(1)} L ${pinX.toFixed(1)},${midY.toFixed(1)} L ${pinX.toFixed(1)},${inY.toFixed(1)}`;
+            pts.push([streetX, busY_coop], [streetX, midY], [pinX, midY], [pinX, inY]);
           }
 
           registerSegment(
@@ -1328,72 +1275,52 @@ function computeLayoutAndBatchedCables(
     }
 
     // ------------------------------------------------------------------------
-    // INTERCONEXIÓN FÍSICA TRONCAL ENTRE BARRAS SCADA (CORRIENTE CONTINUA SADI)
-    // Conecta las barras colectoras de generación y las barras de salida de
-    // transformación con las barras de alimentación del nivel correspondiente.
-    // Conductores troncales de alta capacidad que discurren por los corredores
-    // protegidos entre columnas de estaciones (calles a 90°).
+    // INTERCONEXIÓN FÍSICA TRONCAL ENTRE NIVELES (LÍNEAS TRONCALES DE ENLACE)
+    // Conecta las barras de salida de reducción con las barras troncales del nivel
+    // inferior por los corredores protegidos laterales y centrales.
     // ------------------------------------------------------------------------
-    // 500 kV: Generación 500 kV -> Barra de Entrada EETT 500 kV (ternas troncales distribuidas)
-    connectBuses(
-      'BUS_GEN_500',
-      'BUS_IN_ET_500',
-      500,
-      'Línea Troncal Extra Alta Tensión 500 kV (Interconexión Nacional)',
-      [100, 450, 750, 1050, 1350, 1650, 1950, 2250, 2550, 2850, 3150, 3450, 3750, 4050, 4350, 4650, 5000]
-    );
-
-    // 220 kV: Salida Reducción 500/220 kV EETT -> Barra Troncal 220 kV
+    // Enlace 500 kV -> 220 kV
     connectBuses(
       'BUS_OUT_ET_500',
-      'BUS_IN_ET_220',
+      'BUS_GEN_220',
       220,
       'Enlace Transformación 500/220 kV hacia Red Troncal',
       [140, 600, 1200, 1800, 2400, 3000, 3600, 4200, 4960]
     );
 
-    // 220 kV: Inyección Centrales MEM 220 kV -> Barra Troncal 220 kV
+    // Enlace 500 kV -> 132 kV
     connectBuses(
-      'BUS_GEN_220',
-      'BUS_IN_ET_220',
-      220,
-      'Inyección Troncal 220 kV Centrales MEM',
+      'BUS_OUT_ET_500',
+      'BUS_GEN_132',
+      132,
+      'Enlace Directo 500/132 kV Gran Buenos Aires y Litoral',
       [180, 900, 1500, 2100, 2700, 3300, 3900, 4500, 4920]
     );
 
-    // 132 kV: Salida Reducción 220/132 kV EETT -> Barra Subtransmisión 132 kV
+    // Enlace 220 kV -> 132 kV
     connectBuses(
       'BUS_OUT_ET_220',
-      'BUS_IN_ET_132',
+      'BUS_GEN_132',
       132,
       'Enlace Transformación 220/132 kV hacia Subtransmisión',
-      [140, 450, 900, 1350, 1800, 2250, 2700, 3150, 3600, 4050, 4500, 4960]
+      [140, 600, 1200, 1800, 2400, 3000, 3600, 4200, 4960]
     );
 
-    // 132 kV: Inyección Centrales Regionales 132 kV -> Barra Subtransmisión 132 kV
-    connectBuses(
-      'BUS_GEN_132',
-      'BUS_IN_ET_132',
-      132,
-      'Inyección Subtransmisión 132 kV Centrales Regionales',
-      [180, 600, 1050, 1500, 1950, 2400, 2850, 3300, 3750, 4200, 4650, 4920]
-    );
-
-    // 33 kV: Salida Reducción 132/33 kV EETT -> Barra Distribución 33 kV
+    // Enlace 132 kV -> 33 kV
     connectBuses(
       'BUS_OUT_ET_132',
-      'BUS_DIST_IN_33',
+      'BUS_GEN_33',
       33,
       'Enlace Transformación 132/33 kV hacia Distribuidoras',
       [140, 600, 1200, 1800, 2400, 3000, 3600, 4200, 4960]
     );
 
-    // 33 kV: Inyección Centrales Locales 33 kV -> Barra Distribución 33 kV
+    // Enlace 33 kV -> 13,2 kV
     connectBuses(
-      'BUS_GEN_33',
-      'BUS_DIST_IN_33',
-      33,
-      'Inyección Media Tensión 33 kV Centrales Locales',
+      'BUS_DIST_OUT_13',
+      'BUS_COOP_13',
+      13.2,
+      'Enlace Media Tensión hacia Redes de Cooperativas',
       [180, 900, 1500, 2100, 2700, 3300, 3900, 4500, 4920]
     );
   } else {
@@ -2044,7 +1971,7 @@ const FlowSceneInner: React.FC<{
         speed: b.speed,
         cfg,
         dash: [dashLen, gapLen],
-        path: new Path2D(b.paths)
+        path: new Path2D(b.d)
       };
     });
 
@@ -2168,14 +2095,19 @@ const FlowSceneInner: React.FC<{
     }
 
     // 2. CABLES (Trazados unificados en GPU: cables activos nítidos, cables atenuados en fondo)
+    // Escala adaptativa de cables: garantiza visibilidad nítida en pantalla a cualquier nivel de zoom.
+    // En vista macro (< 0.65x) escala suavemente para que ninguna línea desaparezca por sub-pixel rasterization.
+    // En zoom normal/cercano (>= 0.65x) respeta fielmente los grosores físicos base calibrados.
+    const cableScale = Math.min(6.5, Math.max(1.0, 1 / Math.pow(Math.max(0.04, vp.zoom), 0.58)));
+
     // 2a. Cables atenuados (si hay filtro activo): batch de atenuación suave de fondo (máx 5 llamadas)
     if (!selectedEdge && !selectedNode && compiledPaths.dimmedBase2D.length > 0) {
       ctx.setLineDash([]);
-      ctx.globalAlpha = 0.16;
+      ctx.globalAlpha = 0.20;
       for (let i = 0; i < compiledPaths.dimmedBase2D.length; i++) {
         const b = compiledPaths.dimmedBase2D[i];
         ctx.strokeStyle = b.cfg.color;
-        ctx.lineWidth = b.cfg.width * (isMap ? 1.2 : 1.0);
+        ctx.lineWidth = b.cfg.width * (isMap ? 1.2 : 1.0) * cableScale;
         ctx.stroke(b.path);
       }
     }
@@ -2183,11 +2115,11 @@ const FlowSceneInner: React.FC<{
     // 2b. Cables activos: trazado base continuo con saturación y contraste total (máx 5 llamadas)
     if (!selectedEdge && !selectedNode && compiledPaths.activeBase2D.length > 0) {
       ctx.setLineDash([]);
-      ctx.globalAlpha = 0.88;
+      ctx.globalAlpha = 0.92;
       for (let i = 0; i < compiledPaths.activeBase2D.length; i++) {
         const b = compiledPaths.activeBase2D[i];
         ctx.strokeStyle = b.cfg.color;
-        ctx.lineWidth = b.cfg.width * (isMap ? 1.2 : 1.0);
+        ctx.lineWidth = b.cfg.width * (isMap ? 1.2 : 1.0) * cableScale;
         ctx.stroke(b.path);
       }
     }
@@ -2196,19 +2128,21 @@ const FlowSceneInner: React.FC<{
     if (!selectedEdge && !selectedNode && animateFlow && compiledPaths.activeAnim2D.length > 0) {
       if (vp.zoom < 0.65) {
         // En vista macro o zoom medio: trazado animado agrupado por tensión y velocidad (máx 15 llamadas de GPU en total)
-        ctx.globalAlpha = 0.96;
+        ctx.globalAlpha = 0.98;
         for (let i = 0; i < compiledPaths.activeAnim2D.length; i++) {
           const a = compiledPaths.activeAnim2D[i];
-          ctx.strokeStyle = a.cfg.color;
-          ctx.lineWidth = a.cfg.width * (isMap ? 1.2 : 1.0);
-          ctx.setLineDash(a.dash);
-          const speedPx = SPEED_PX_PER_SEC[a.speed];
-          ctx.lineDashOffset = -(dashPhaseRef.current * speedPx) % 240;
+          const dashLen = Math.max(8, Math.round(a.dash[0] * cableScale));
+          const gapLen = Math.max(6, Math.round(a.dash[1] * cableScale));
+          ctx.strokeStyle = '#FAF8F3';
+          ctx.lineWidth = Math.max(1.8 * cableScale, a.cfg.width * (isMap ? 0.75 : 0.65) * cableScale);
+          ctx.setLineDash([dashLen, gapLen]);
+          const speedPx = SPEED_PX_PER_SEC[a.speed] * cableScale;
+          ctx.lineDashOffset = -(dashPhaseRef.current * speedPx) % (Math.max(1, dashLen + gapLen) * 8);
           ctx.stroke(a.path);
         }
       } else {
         // En zoom cercano: viewport culling estricto (solo se animan los ~10-25 cables visibles en la pantalla)
-        ctx.globalAlpha = 0.96;
+        ctx.globalAlpha = 0.98;
         for (let i = 0; i < activeCables.length; i++) {
           const cg = activeCables[i];
           if (!cableCrossesViewport(cg, viewMinX, viewMaxX, viewMinY, viewMaxY)) {
@@ -2220,9 +2154,9 @@ const FlowSceneInner: React.FC<{
           const gapLen = Math.max(6, Math.round(cableWidth * 2.0));
           ctx.setLineDash([dashLen, gapLen]);
           const speedPx = SPEED_PX_PER_SEC[cg.speedBucket];
-          ctx.lineDashOffset = -(dashPhaseRef.current * speedPx) % 240;
-          ctx.lineWidth = cableWidth;
-          ctx.strokeStyle = cfg.color;
+          ctx.lineDashOffset = -(dashPhaseRef.current * speedPx) % (dashLen + gapLen);
+          ctx.lineWidth = Math.max(1.8, cableWidth * 0.65);
+          ctx.strokeStyle = '#FAF8F3';
           ctx.stroke(cg.path2D);
         }
       }
