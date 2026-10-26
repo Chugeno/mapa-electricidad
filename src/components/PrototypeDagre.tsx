@@ -9,7 +9,7 @@ import {
   Viewport
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { Search, X } from 'lucide-react';
+import { Search, X, ChevronDown, Check } from 'lucide-react';
 import { TopologyData, TelemetryData } from '../types';
 
 // ============================================================================
@@ -678,10 +678,10 @@ function computeLayoutAndBatchedCables(
   masterNodes: GridNodeData[],
   masterEdges: GridEdgeData[],
   mode: 'DAGRE_LR' | 'DAGRE_TB' | 'BUSES' | 'MAP',
-  filterKv: number | null,
-  filterRole: string | null,
+  filterKv: number[],
+  filterRole: string[],
   filterRegion: string | null,
-  filterTech: string | null,
+  filterTech: string[],
   searchQuery: string,
   telemetry: TelemetryData | null
 ) {
@@ -700,14 +700,18 @@ function computeLayoutAndBatchedCables(
     return 1.0;
   };
 
-  const hasActiveFilter = Boolean(filterKv !== null || filterRole || filterRegion || filterTech || q);
+  const hasKvFilter = filterKv.length > 0;
+  const hasRoleFilter = filterRole.length > 0;
+  const hasTechFilter = filterTech.length > 0;
+  const hasRegionFilter = Boolean(isMap && filterRegion);
+  const hasActiveFilter = Boolean(hasKvFilter || hasRoleFilter || hasRegionFilter || hasTechFilter || q);
 
   const directMatchUids = new Set<string>();
   masterNodes.forEach((n) => {
-    if (filterRole && n.role !== filterRole) return;
-    if (filterRegion && n.region.toUpperCase() !== filterRegion.toUpperCase()) return;
-    if (filterTech && n.tecnologia !== filterTech) return;
-    if (filterKv !== null && normalizeKvKey(n.voltageKv) !== filterKv) return;
+    if (hasRoleFilter && !filterRole.includes(n.role)) return;
+    if (hasRegionFilter && n.region.toUpperCase() !== filterRegion!.toUpperCase()) return;
+    if (hasTechFilter && (!n.tecnologia || !filterTech.includes(n.tecnologia))) return;
+    if (hasKvFilter && !filterKv.includes(normalizeKvKey(n.voltageKv))) return;
     if (
       q &&
       !n.label.toLowerCase().includes(q) &&
@@ -725,14 +729,14 @@ function computeLayoutAndBatchedCables(
   masterEdges.forEach((e) => {
     const srcId = String(e.source);
     const tgtId = String(e.target);
-    const edgeMatchesKv = filterKv === null || normalizeKvKey(e.kv) === filterKv;
+    const edgeMatchesKv = !hasKvFilter || filterKv.includes(normalizeKvKey(e.kv));
 
     if (!hasActiveFilter) {
       activeEdgeIds.add(e.id);
       return;
     }
 
-    if (filterKv !== null && !filterRole && !filterRegion && !filterTech && !q) {
+    if (hasKvFilter && !hasRoleFilter && !hasRegionFilter && !hasTechFilter && !q) {
       if (edgeMatchesKv) activeEdgeIds.add(e.id);
     } else {
       if (directMatchUids.has(srcId) || directMatchUids.has(tgtId)) {
@@ -868,7 +872,7 @@ function computeLayoutAndBatchedCables(
           [40, y],
           [diagramW - 40, y]
         ],
-        filterKv !== null && filterKv !== kv
+        filterKv.length > 0 && !filterKv.includes(kv)
       );
     };
 
@@ -883,7 +887,7 @@ function computeLayoutAndBatchedCables(
       const toY = busYMap.get(toBusId);
       if (fromY === undefined || toY === undefined) return;
 
-      const isDimmed = filterKv !== null && filterKv !== kv;
+      const isDimmed = filterKv.length > 0 && !filterKv.includes(kv);
       const speed: 'fast' | 'med' | 'slow' = kv >= 500 ? 'fast' : kv >= 220 ? 'med' : 'slow';
 
       xs.forEach((x, idx) => {
@@ -1056,7 +1060,7 @@ function computeLayoutAndBatchedCables(
           const speed = getSpeedBucket(liveAmps);
 
           // Entrada desde el bus superior
-          const isDimmedIn = isNodeDimmed || (filterKv !== null && filterKv !== inKv);
+          const isDimmedIn = isNodeDimmed || (filterKv.length > 0 && !filterKv.includes(inKv));
           let dIn = '';
           const ptsIn: [number, number][] = [];
 
@@ -1084,7 +1088,7 @@ function computeLayoutAndBatchedCables(
           );
 
           // Salida hacia el bus inferior
-          const isDimmedOut = isNodeDimmed || (filterKv !== null && filterKv !== outKv);
+          const isDimmedOut = isNodeDimmed || (filterKv.length > 0 && !filterKv.includes(outKv));
           let dOut = '';
           const ptsOut: [number, number][] = [];
 
@@ -1260,7 +1264,7 @@ function computeLayoutAndBatchedCables(
           const pinX = nodeX + HALF_BOX;
           const inY = rowY;
           const isNodeDimmed = !illuminatedNodeUids.has(n.uid);
-          const isDimmed = isNodeDimmed || (filterKv !== null && filterKv !== 13.2);
+          const isDimmed = isNodeDimmed || (filterKv.length > 0 && !filterKv.includes(13.2));
           const factor = getRegionFactor(n.region);
           const liveAmps = Math.round(n.amperes * factor);
           const speed = getSpeedBucket(liveAmps);
@@ -1816,10 +1820,10 @@ const FlowSceneInner: React.FC<{
   layoutMode: 'DAGRE_LR' | 'DAGRE_TB' | 'BUSES' | 'MAP';
   topology: TopologyData | null;
   telemetry: TelemetryData | null;
-  filterKv: number | null;
-  filterRole: string | null;
+  filterKv: number[];
+  filterRole: string[];
   filterRegion: string | null;
-  filterTech: string | null;
+  filterTech: string[];
   searchQuery: string;
   showFullWfs: boolean;
   animateFlow: boolean;
@@ -2071,7 +2075,7 @@ const FlowSceneInner: React.FC<{
         const bp = busPlaques[i];
         if (bp.y < viewMinY - 140 || bp.y > viewMaxY + 140) continue;
 
-        const isDimmed = filterKv !== null && filterKv !== bp.kv;
+        const isDimmed = filterKv.length > 0 && !filterKv.includes(bp.kv);
         ctx.save();
         if (isDimmed) {
           ctx.globalAlpha = 0.22;
@@ -2315,7 +2319,8 @@ const FlowSceneInner: React.FC<{
         ctx.fillStyle = '#FAF8F3';
         ctx.fillRect(nodeX, nodeY, size, size);
         ctx.strokeStyle = isDimmed ? '#8A857A' : vCfg.color;
-        ctx.lineWidth = Math.max(1.2, (isDimmed ? 1.4 : 2.0) * mapScaleFactor);
+        // Grosor constante en pantalla (invariante ante el zoom del mapa)
+        ctx.lineWidth = 1.6 / vp.zoom;
         ctx.strokeRect(nodeX, nodeY, size, size);
 
         // Franja superior de tensión
@@ -2330,7 +2335,8 @@ const FlowSceneInner: React.FC<{
         ctx.translate(ix, iy);
         ctx.scale(s, s);
         ctx.strokeStyle = isDimmed ? '#8A857A' : vCfg.color;
-        ctx.lineWidth = Math.max(1.4, 2.0 * mapScaleFactor) / s;
+        // Grosor del trazo del ícono constante en pantalla (invariante ante el zoom)
+        ctx.lineWidth = 1.8 / (vp.zoom * s);
         ctx.lineCap = 'round';
         ctx.lineJoin = 'round';
         ctx.stroke(iconPath);
@@ -2363,7 +2369,8 @@ const FlowSceneInner: React.FC<{
           ctx.fillStyle = isDimmed ? 'rgba(250, 248, 243, 0.75)' : 'rgba(250, 248, 243, 0.96)';
           ctx.fillRect(lx, ly, boxW, boxH);
           ctx.strokeStyle = isDimmed ? '#A59F91' : '#222426';
-          ctx.lineWidth = Math.max(0.9, 1.1 * mapScaleFactor);
+          // Borde del cuadro de texto constante en pantalla
+          ctx.lineWidth = 1.1 / vp.zoom;
           ctx.strokeRect(lx, ly, boxW, boxH);
 
           // Barra lateral de tensión (mismo alto)
@@ -3536,10 +3543,11 @@ export const PrototypeDagre: React.FC = () => {
   const [layoutMode, setLayoutMode] = useState<'DAGRE_LR' | 'DAGRE_TB' | 'BUSES' | 'MAP'>('DAGRE_TB');
   const [topology, setTopology] = useState<TopologyData | null>(null);
   const [telemetry, setTelemetry] = useState<TelemetryData | null>(null);
-  const [filterKv, setFilterKv] = useState<number | null>(null);
-  const [filterRole, setFilterRole] = useState<string | null>(null);
+  const [filterKv, setFilterKv] = useState<number[]>([]);
+  const [filterRole, setFilterRole] = useState<string[]>([]);
   const [filterRegion, setFilterRegion] = useState<string | null>(null);
-  const [filterTech, setFilterTech] = useState<string | null>(null);
+  const [filterTech, setFilterTech] = useState<string[]>([]);
+  const [openDropdown, setOpenDropdown] = useState<'kv' | 'role' | 'tech' | null>(null);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [showFullWfs, setShowFullWfs] = useState<boolean>(false);
   const [animateFlow, setAnimateFlow] = useState<boolean>(false);
@@ -3598,14 +3606,33 @@ export const PrototypeDagre: React.FC = () => {
   const closeModal = () => {
     setSelectedNode(null);
     setSelectedEdge(null);
+    setOpenDropdown(null);
   };
 
   const resetAllFilters = () => {
-    setFilterKv(null);
-    setFilterRole(null);
+    setFilterKv([]);
+    setFilterRole([]);
     setFilterRegion(null);
-    setFilterTech(null);
+    setFilterTech([]);
     setSearchQuery('');
+  };
+
+  const toggleKv = (kvNum: number) => {
+    setFilterKv((prev) =>
+      prev.includes(kvNum) ? prev.filter((k) => k !== kvNum) : [...prev, kvNum]
+    );
+  };
+
+  const toggleRole = (rId: string) => {
+    setFilterRole((prev) =>
+      prev.includes(rId) ? prev.filter((r) => r !== rId) : [...prev, rId]
+    );
+  };
+
+  const toggleTech = (tId: string) => {
+    setFilterTech((prev) =>
+      prev.includes(tId) ? prev.filter((t) => t !== tId) : [...prev, tId]
+    );
   };
 
   return (
@@ -3773,242 +3800,339 @@ export const PrototypeDagre: React.FC = () => {
         </div>
       </header>
 
-      {/* FILA 1 DE FILTROS: TENSIONES ORDENADAS (500 -> 220 -> 132 -> 33 -> 13,2 kV) Y ESLABÓN */}
+      {/* BARRA DE BÚSQUEDA SUPERIOR (FILA 1) */}
       <div
         style={{
           backgroundColor: '#FAF8F3',
-          borderBottom: '1px solid #D5CFC2',
-          padding: '4px 14px',
+          borderBottom: '1px solid #E2DDD0',
+          padding: '4px 10px',
           display: 'flex',
           alignItems: 'center',
-          justifyContent: 'space-between',
-          gap: '12px',
-          overflowX: 'auto',
+          gap: '8px',
           fontFamily: '"IBM Plex Mono", monospace',
           fontSize: '10px',
-          flexShrink: 0
+          flexShrink: 0,
+          zIndex: 41
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', whiteSpace: 'nowrap' }}>
-          <span style={{ fontWeight: 700, color: '#68655E' }}>TENSIÓN (kV):</span>
-          <button
-            onClick={() => setFilterKv(null)}
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px',
+            backgroundColor: '#FFFFFF',
+            border: '1px solid #222426',
+            padding: '4px 8px',
+            flex: 1,
+            borderRadius: '2px'
+          }}
+        >
+          <Search className="w-3.5 h-3.5" style={{ color: '#68655E', flexShrink: 0 }} />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Buscar central, estación, empresa o provincia..."
             style={{
+              border: 'none',
+              outline: 'none',
+              backgroundColor: 'transparent',
+              fontFamily: '"IBM Plex Mono", monospace',
+              fontSize: '11px',
+              width: '100%',
+              color: '#222426'
+            }}
+          />
+          {searchQuery && (
+            <button
+              onClick={() => setSearchQuery('')}
+              style={{ border: 'none', background: 'transparent', cursor: 'pointer', padding: 0, display: 'flex' }}
+            >
+              <X className="w-3.5 h-3.5" style={{ color: '#222426' }} />
+            </button>
+          )}
+        </div>
+
+        {/* BOTÓN LIMPIAR FILTROS (con posición fija y estable para no mover los botones) */}
+        {(filterKv.length > 0 || filterRole.length > 0 || filterTech.length > 0 || filterRegion || searchQuery) && (
+          <button
+            onClick={resetAllFilters}
+            style={{
+              backgroundColor: '#C04A35',
+              color: '#FAF8F3',
+              border: '1px solid #222426',
+              padding: '4px 8px',
               fontFamily: '"IBM Plex Mono", monospace',
               fontSize: '10px',
               fontWeight: 700,
-              padding: '2px 7px',
-              border: '1px solid #222426',
               cursor: 'pointer',
-              backgroundColor: filterKv === null ? '#222426' : 'transparent',
-              color: filterKv === null ? '#FAF8F3' : '#222426'
+              borderRadius: '2px',
+              whiteSpace: 'nowrap',
+              flexShrink: 0
             }}
           >
-            TODAS
+            ✕ LIMPIAR
           </button>
-          {VOLTAGE_ORDER.map((kvNum) => {
-            const cfg = VOLTAGE_CONFIG[kvNum];
-            const active = filterKv === kvNum;
-            return (
-              <button
-                key={kvNum}
-                onClick={() => setFilterKv(active ? null : kvNum)}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '5px',
-                  fontFamily: '"IBM Plex Mono", monospace',
-                  fontSize: '10px',
-                  fontWeight: 700,
-                  padding: '2px 7px',
-                  border: active ? '1.5px solid #222426' : '1px solid #D1CBBF',
-                  backgroundColor: active ? '#EAE4D7' : 'transparent',
-                  cursor: 'pointer'
-                }}
-              >
-                <span
-                  style={{
-                    display: 'inline-block',
-                    width: '16px',
-                    height: `${cfg.width}px`,
-                    backgroundColor: cfg.color
-                  }}
-                />
-                <strong>{cfg.displayKv}</strong>
-              </button>
-            );
-          })}
-        </div>
-
-        <div style={{ display: 'flex', alignItems: 'center', gap: '5px', whiteSpace: 'nowrap' }}>
-          <span style={{ fontWeight: 700, color: '#68655E' }}>ESLABÓN:</span>
-          {[
-            { id: null, label: 'TODOS (1.410)' },
-            { id: 'GEN', label: '1. GENERACIÓN (474)' },
-            { id: 'ET500', label: '2. EETT 500kV (59)' },
-            { id: 'ET132', label: '3. SUBTRANSMISIÓN (264)' },
-            { id: 'DIST', label: '4. DISTRIBUCIÓN (33)' },
-            { id: 'COOP', label: '5. COOPERATIVAS (580)' }
-          ].map((r) => {
-            const active = filterRole === r.id;
-            return (
-              <button
-                key={r.label}
-                onClick={() => setFilterRole(active ? null : r.id)}
-                style={{
-                  fontFamily: '"IBM Plex Mono", monospace',
-                  fontSize: '9.8px',
-                  fontWeight: 700,
-                  padding: '2px 7px',
-                  border: '1px solid #222426',
-                  cursor: 'pointer',
-                  backgroundColor: active ? '#222426' : 'transparent',
-                  color: active ? '#FAF8F3' : '#222426'
-                }}
-              >
-                {r.label}
-              </button>
-            );
-          })}
-        </div>
+        )}
       </div>
 
-      {/* FILA 2 DE FILTROS: REGIÓN CAMMESA, TECNOLOGÍA DE GENERACIÓN Y BUSCADOR */}
+      {/* BARRA DE FILTROS DESPLEGABLES (FILA 2) - Botones estables sin saltos verticales */}
       <div
         style={{
           backgroundColor: '#F3EFE6',
-          borderBottom: '1px solid #C8C2B4',
-          padding: '4px 14px',
+          borderBottom: '1px solid #D5CFC2',
+          padding: '4px 10px',
           display: 'flex',
           alignItems: 'center',
-          justifyContent: 'space-between',
-          gap: '12px',
-          overflowX: 'auto',
+          gap: '6px',
           fontFamily: '"IBM Plex Mono", monospace',
-          fontSize: '9.8px',
-          flexShrink: 0
+          fontSize: '9.5px',
+          flexShrink: 0,
+          position: 'relative',
+          zIndex: 40,
+          whiteSpace: 'nowrap'
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: '4px', whiteSpace: 'nowrap' }}>
-          <span style={{ fontWeight: 700, color: '#68655E' }}>REGIÓN:</span>
-          {[
-            { id: null, label: '🇦🇷 TODAS' },
-            { id: 'GBA', label: 'GBA / PBA' },
-            { id: 'Litoral', label: 'LITORAL' },
-            { id: 'Centro', label: 'CENTRO' },
-            { id: 'Cuyo', label: 'CUYO' },
-            { id: 'NOA', label: 'NOA' },
-            { id: 'NEA', label: 'NEA' },
-            { id: 'Comahue', label: 'COMAHUE' },
-            { id: 'Patagonia', label: 'PATAGONIA' }
-          ].map((reg) => {
-            const active = filterRegion === reg.id;
-            return (
-              <button
-                key={reg.label}
-                onClick={() => setFilterRegion(active ? null : reg.id)}
-                style={{
-                  fontFamily: '"IBM Plex Mono", monospace',
-                  fontSize: '9.5px',
-                  fontWeight: 700,
-                  padding: '2px 6px',
-                  border: active ? '1.5px solid #222426' : '1px solid #C8C2B4',
-                  backgroundColor: active ? '#222426' : '#FAF8F3',
-                  color: active ? '#FAF8F3' : '#222426',
-                  cursor: 'pointer'
-                }}
-              >
-                {reg.label}
-              </button>
-            );
-          })}
-        </div>
-
-        <div style={{ display: 'flex', alignItems: 'center', gap: '4px', whiteSpace: 'nowrap' }}>
-          <span style={{ fontWeight: 700, color: '#68655E' }}>TECNOLOGÍA:</span>
-          {[
-            { id: null, label: 'TODAS' },
-            { id: 'Hidroeléctrica', label: '💧 Hidro (62)' },
-            { id: 'Nuclear', label: '☢️ Nuclear (2)' },
-            { id: 'Térmica', label: '🔥 Térmica (205)' },
-            { id: 'Eólica', label: '💨 Eólica (71)' },
-            { id: 'Solar', label: '☀️ Solar (84)' },
-            { id: 'Biomasa', label: '🌱 Biomasa (50)' }
-          ].map((t) => {
-            const active = filterTech === t.id;
-            return (
-              <button
-                key={t.label}
-                onClick={() => setFilterTech(active ? null : t.id)}
-                style={{
-                  fontFamily: '"IBM Plex Mono", monospace',
-                  fontSize: '9.5px',
-                  fontWeight: 700,
-                  padding: '2px 6px',
-                  border: active ? '1.5px solid #222426' : '1px solid #C8C2B4',
-                  backgroundColor: active ? '#222426' : '#FAF8F3',
-                  color: active ? '#FAF8F3' : '#222426',
-                  cursor: 'pointer'
-                }}
-              >
-                {t.label}
-              </button>
-            );
-          })}
-        </div>
-
-        <div style={{ display: 'flex', alignItems: 'center', gap: '5px', flexShrink: 0 }}>
-          <div
+        {/* 1. DROPDOWN TENSIÓN */}
+        <div style={{ position: 'relative' }}>
+          <button
+            onClick={() => setOpenDropdown((prev) => (prev === 'kv' ? null : 'kv'))}
             style={{
+              fontFamily: '"IBM Plex Mono", monospace',
+              fontSize: '9.5px',
+              fontWeight: 700,
+              padding: '4px 7px',
+              border: filterKv.length > 0 ? '1.5px solid #222426' : '1px solid #C8C2B4',
+              backgroundColor: filterKv.length > 0 ? '#222426' : '#FAF8F3',
+              color: filterKv.length > 0 ? '#FAF8F3' : '#222426',
+              cursor: 'pointer',
               display: 'flex',
               alignItems: 'center',
               gap: '4px',
-              backgroundColor: '#FAF8F3',
-              border: '1px solid #222426',
-              padding: '1px 6px'
+              borderRadius: '2px',
+              whiteSpace: 'nowrap'
             }}
           >
-            <Search className="w-3 h-3" style={{ color: '#68655E' }} />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Buscar central, ET, prov..."
+            <span>⚡ TENSIÓN{filterKv.length > 0 ? ` (${filterKv.length})` : ''}</span>
+            <ChevronDown className="w-3 h-3" />
+          </button>
+
+          {openDropdown === 'kv' && (
+            <div
               style={{
-                border: 'none',
-                outline: 'none',
-                backgroundColor: 'transparent',
-                fontFamily: '"IBM Plex Mono", monospace',
-                fontSize: '10px',
-                width: '145px',
-                color: '#222426'
-              }}
-            />
-            {searchQuery && (
-              <button
-                onClick={() => setSearchQuery('')}
-                style={{ border: 'none', background: 'transparent', cursor: 'pointer', padding: 0 }}
-              >
-                <X className="w-3 h-3" />
-              </button>
-            )}
-          </div>
-          {(filterKv !== null || filterRole || filterRegion || filterTech || searchQuery) && (
-            <button
-              onClick={resetAllFilters}
-              style={{
-                backgroundColor: '#C04A35',
-                color: '#FAF8F3',
-                border: '1px solid #222426',
-                padding: '2px 6px',
-                fontFamily: '"IBM Plex Mono", monospace',
-                fontSize: '9.5px',
-                fontWeight: 700,
-                cursor: 'pointer'
+                position: 'absolute',
+                top: 'calc(100% + 4px)',
+                left: 0,
+                backgroundColor: '#FAF8F3',
+                border: '1.5px solid #222426',
+                boxShadow: '0 6px 16px rgba(0,0,0,0.18)',
+                padding: '6px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '4px',
+                zIndex: 50,
+                minWidth: '150px'
               }}
             >
-              LIMPIAR FILTROS
-            </button>
+              {VOLTAGE_ORDER.map((kvNum) => {
+                const cfg = VOLTAGE_CONFIG[kvNum];
+                const active = filterKv.includes(kvNum);
+                return (
+                  <button
+                    key={kvNum}
+                    onClick={() => toggleKv(kvNum)}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: '8px',
+                      padding: '4px 7px',
+                      backgroundColor: active ? '#EAE4D7' : 'transparent',
+                      border: '1px solid',
+                      borderColor: active ? '#222426' : 'transparent',
+                      cursor: 'pointer',
+                      fontFamily: '"IBM Plex Mono", monospace',
+                      fontSize: '10px',
+                      fontWeight: active ? 700 : 500,
+                      color: '#222426',
+                      textAlign: 'left'
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <span
+                        style={{
+                          display: 'inline-block',
+                          width: '12px',
+                          height: '4px',
+                          backgroundColor: cfg.color
+                        }}
+                      />
+                      <span>{cfg.displayKv}</span>
+                    </div>
+                    {active && <Check className="w-3 h-3" style={{ color: '#222426' }} />}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* 2. DROPDOWN ESLABÓN */}
+        <div style={{ position: 'relative' }}>
+          <button
+            onClick={() => setOpenDropdown((prev) => (prev === 'role' ? null : 'role'))}
+            style={{
+              fontFamily: '"IBM Plex Mono", monospace',
+              fontSize: '9.5px',
+              fontWeight: 700,
+              padding: '4px 7px',
+              border: filterRole.length > 0 ? '1.5px solid #222426' : '1px solid #C8C2B4',
+              backgroundColor: filterRole.length > 0 ? '#222426' : '#FAF8F3',
+              color: filterRole.length > 0 ? '#FAF8F3' : '#222426',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '4px',
+              borderRadius: '2px',
+              whiteSpace: 'nowrap'
+            }}
+          >
+            <span>🏭 ESLABÓN{filterRole.length > 0 ? ` (${filterRole.length})` : ''}</span>
+            <ChevronDown className="w-3 h-3" />
+          </button>
+
+          {openDropdown === 'role' && (
+            <div
+              style={{
+                position: 'absolute',
+                top: 'calc(100% + 4px)',
+                left: 0,
+                backgroundColor: '#FAF8F3',
+                border: '1.5px solid #222426',
+                boxShadow: '0 6px 16px rgba(0,0,0,0.18)',
+                padding: '6px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '4px',
+                zIndex: 50,
+                minWidth: '185px'
+              }}
+            >
+              {[
+                { id: 'GEN', label: '1. GENERACIÓN (474)' },
+                { id: 'ET500', label: '2. EETT 500kV (59)' },
+                { id: 'ET132', label: '3. SUBTRANSMISIÓN (264)' },
+                { id: 'DIST', label: '4. DISTRIBUCIÓN (33)' },
+                { id: 'COOP', label: '5. COOPERATIVAS (580)' }
+              ].map((r) => {
+                const active = filterRole.includes(r.id);
+                return (
+                  <button
+                    key={r.id}
+                    onClick={() => toggleRole(r.id)}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: '8px',
+                      padding: '4px 7px',
+                      backgroundColor: active ? '#EAE4D7' : 'transparent',
+                      border: '1px solid',
+                      borderColor: active ? '#222426' : 'transparent',
+                      cursor: 'pointer',
+                      fontFamily: '"IBM Plex Mono", monospace',
+                      fontSize: '9.8px',
+                      fontWeight: active ? 700 : 500,
+                      color: '#222426',
+                      textAlign: 'left'
+                    }}
+                  >
+                    <span>{r.label}</span>
+                    {active && <Check className="w-3 h-3" style={{ color: '#222426' }} />}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* 3. DROPDOWN TECNOLOGÍA */}
+        <div style={{ position: 'relative' }}>
+          <button
+            onClick={() => setOpenDropdown((prev) => (prev === 'tech' ? null : 'tech'))}
+            style={{
+              fontFamily: '"IBM Plex Mono", monospace',
+              fontSize: '9.5px',
+              fontWeight: 700,
+              padding: '4px 7px',
+              border: filterTech.length > 0 ? '1.5px solid #222426' : '1px solid #C8C2B4',
+              backgroundColor: filterTech.length > 0 ? '#222426' : '#FAF8F3',
+              color: filterTech.length > 0 ? '#FAF8F3' : '#222426',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '4px',
+              borderRadius: '2px',
+              whiteSpace: 'nowrap'
+            }}
+          >
+            <span>⚙️ TECNOLOGÍA{filterTech.length > 0 ? ` (${filterTech.length})` : ''}</span>
+            <ChevronDown className="w-3 h-3" />
+          </button>
+
+          {openDropdown === 'tech' && (
+            <div
+              style={{
+                position: 'absolute',
+                top: 'calc(100% + 4px)',
+                left: 0,
+                backgroundColor: '#FAF8F3',
+                border: '1.5px solid #222426',
+                boxShadow: '0 6px 16px rgba(0,0,0,0.18)',
+                padding: '6px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '4px',
+                zIndex: 50,
+                minWidth: '175px'
+              }}
+            >
+              {[
+                { id: 'Hidroeléctrica', label: '💧 Hidroeléctrica (62)' },
+                { id: 'Nuclear', label: '☢️ Nuclear (2)' },
+                { id: 'Térmica', label: '🔥 Térmica (205)' },
+                { id: 'Eólica', label: '💨 Eólica (71)' },
+                { id: 'Solar', label: '☀️ Solar (84)' },
+                { id: 'Biomasa', label: '🌱 Biomasa (50)' }
+              ].map((t) => {
+                const active = filterTech.includes(t.id);
+                return (
+                  <button
+                    key={t.id}
+                    onClick={() => toggleTech(t.id)}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: '8px',
+                      padding: '4px 7px',
+                      backgroundColor: active ? '#EAE4D7' : 'transparent',
+                      border: '1px solid',
+                      borderColor: active ? '#222426' : 'transparent',
+                      cursor: 'pointer',
+                      fontFamily: '"IBM Plex Mono", monospace',
+                      fontSize: '9.8px',
+                      fontWeight: active ? 700 : 500,
+                      color: '#222426',
+                      textAlign: 'left'
+                    }}
+                  >
+                    <span>{t.label}</span>
+                    {active && <Check className="w-3 h-3" style={{ color: '#222426' }} />}
+                  </button>
+                );
+              })}
+            </div>
           )}
         </div>
       </div>
@@ -4094,13 +4218,15 @@ export const PrototypeDagre: React.FC = () => {
               DESPACHO REGIONAL CAMMESA:
             </span>
             {Object.entries(telemetry.regions).map(([regKey, reg]) => {
-              const active = filterRegion?.toUpperCase() === regKey.toUpperCase();
+              const active = layoutMode === 'MAP' && filterRegion?.toUpperCase() === regKey.toUpperCase();
               return (
-                <button
+                <div
                   key={regKey}
-                  onClick={() =>
-                    setFilterRegion(active ? null : regKey === 'SADI' ? null : regKey)
-                  }
+                  onClick={() => {
+                    if (layoutMode === 'MAP') {
+                      setFilterRegion(active ? null : regKey === 'SADI' ? null : regKey);
+                    }
+                  }}
                   style={{
                     display: 'flex',
                     alignItems: 'center',
@@ -4110,7 +4236,7 @@ export const PrototypeDagre: React.FC = () => {
                     border: '1px solid #C8C2B4',
                     padding: '2px 6px',
                     whiteSpace: 'nowrap',
-                    cursor: 'pointer',
+                    cursor: layoutMode === 'MAP' ? 'pointer' : 'default',
                     fontFamily: '"IBM Plex Mono", monospace',
                     fontSize: '9.8px'
                   }}
@@ -4122,7 +4248,7 @@ export const PrototypeDagre: React.FC = () => {
                   {typeof reg?.temperatura === 'number' && (
                     <span style={{ opacity: 0.75 }}>({Math.round(reg.temperatura)}°C)</span>
                   )}
-                </button>
+                </div>
               );
             })}
           </div>
