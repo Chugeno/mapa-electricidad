@@ -351,6 +351,8 @@ export interface GridNodeData extends Record<string, unknown> {
   shortTitle2: string;
   code: string;
   role: NodeRole;
+  roleBadge: string;
+  roleDesc: string;
   typeName: string;
   tecnologia?: string;
   iconKind: IconKind;
@@ -477,6 +479,10 @@ function buildMasterDataset(topology: TopologyData | null): {
     const reg = c.region === 'BAS' ? 'GBA' : c.region || 'Centro';
     const [t1, t2] = splitStationTitle(c.nombre);
 
+    const techUpper = (c.tecnologia || '').toUpperCase();
+    const roleBadge = techUpper ? `GENERACIÓN · ${techUpper}` : 'GENERACIÓN';
+    const roleDesc = `Generación Eléctrica (${c.tecnologia || 'Central'})`;
+
     rawNodes.push({
       uid,
       label: c.nombre,
@@ -484,6 +490,8 @@ function buildMasterDataset(topology: TopologyData | null): {
       shortTitle2: t2,
       code: `${c.id} · ${c.tecnologia.toUpperCase()}`,
       role: 'GEN',
+      roleBadge,
+      roleDesc,
       typeName: `1. Generación (${c.tecnologia})`,
       tecnologia: c.tecnologia,
       iconKind: mapTechToIcon(c.tecnologia),
@@ -512,6 +520,10 @@ function buildMasterDataset(topology: TopologyData | null): {
     const reg = e.region === 'BAS' ? 'GBA' : e.region || 'Centro';
     const fullLabel = `ET ${e.nombre}`;
     const [t1, t2] = splitStationTitle(fullLabel);
+    const roleBadge = role === 'ET500' ? 'EETT TRANSPORTE 500 kV' : 'EETT SUBTRANSMISIÓN';
+    const roleDesc = role === 'ET500'
+      ? 'Estación Transformadora Troncal (500 kV)'
+      : `Estación Transformadora Subtransmisión (${kv} kV)`;
 
     rawNodes.push({
       uid,
@@ -520,6 +532,8 @@ function buildMasterDataset(topology: TopologyData | null): {
       shortTitle2: t2,
       code: `${e.id} · EETT ${kv}KV`,
       role,
+      roleBadge,
+      roleDesc,
       typeName: role === 'ET500' ? '2. Transporte 500 kV' : '3. Subestación AT/MT',
       iconKind: role === 'ET500' ? 'et500' : 'et132',
       voltageKv: kv,
@@ -544,6 +558,8 @@ function buildMasterDataset(topology: TopologyData | null): {
     const mw = Math.round(d.potencia_mw || 300);
     const amp = Math.max(180, Math.round((mw * 1000) / (1.732 * 33 * 0.92)));
     const [t1, t2] = splitStationTitle(d.nombre);
+    const roleBadge = 'DISTRIBUIDORA PROVINCIAL';
+    const roleDesc = 'Distribución Eléctrica Provincial';
 
     rawNodes.push({
       uid,
@@ -552,6 +568,8 @@ function buildMasterDataset(topology: TopologyData | null): {
       shortTitle2: t2,
       code: `${d.id} · DISTRIBUIDORA`,
       role: 'DIST',
+      roleBadge,
+      roleDesc,
       typeName: '4. Distribución Provincial',
       iconKind: 'dist',
       voltageKv: kv,
@@ -576,6 +594,8 @@ function buildMasterDataset(topology: TopologyData | null): {
     const mw = Math.round(c.potencia_mw || 12);
     const amp = Math.max(90, Math.round((mw * 1000) / (1.732 * 13.2 * 0.92)));
     const [t1, t2] = splitStationTitle(c.nombre);
+    const roleBadge = 'COOPERATIVA ELÉCTRICA';
+    const roleDesc = 'Distribución Cooperativa (Media/Baja Tensión)';
 
     rawNodes.push({
       uid,
@@ -584,6 +604,8 @@ function buildMasterDataset(topology: TopologyData | null): {
       shortTitle2: t2,
       code: `${c.id} · COOP`,
       role: 'COOP',
+      roleBadge,
+      roleDesc,
       typeName: '5. Cooperativa Eléctrica',
       iconKind: 'coop',
       voltageKv: kv,
@@ -2226,24 +2248,29 @@ const FlowSceneInner: React.FC<{
         ctx.stroke(iconPath);
         ctx.translate(-ix, -iy);
 
-        // 3. Pastilla técnica inferior (Tensión · MW y Amperes · Región)
+        // 3. Pastilla técnica inferior (Rol/Tipo, Tensión · MW y Amperes · Región)
         const pillX = 6;
-        const pillY = 86;
+        const pillY = 82;
         const pillW = BOX_SIZE - 12;
-        const pillH = 31;
+        const pillH = 37;
         ctx.fillStyle = '#EAE4D7';
         ctx.fillRect(pillX, pillY, pillW, pillH);
         ctx.strokeStyle = '#D1CBBF';
         ctx.lineWidth = 1;
         ctx.strokeRect(pillX, pillY, pillW, pillH);
 
+        // Rol del nodo (Generación, EETT, Distribuidora, Cooperativa)
+        ctx.fillStyle = vCfg.color;
+        ctx.font = '700 7.2px "IBM Plex Mono", monospace';
+        ctx.fillText(n.roleBadge || n.typeName, HALF_BOX, pillY + 3.5);
+
         ctx.fillStyle = '#222426';
-        ctx.font = '700 8.2px "IBM Plex Mono", monospace';
-        ctx.fillText(`${n.kvText} · ${n.powerMw}`, HALF_BOX, pillY + 4);
+        ctx.font = '700 8.0px "IBM Plex Mono", monospace';
+        ctx.fillText(`${n.kvText} · ${n.powerMw}`, HALF_BOX, pillY + 14.5);
 
         ctx.fillStyle = '#55524B';
-        ctx.font = '600 8px "IBM Plex Mono", monospace';
-        ctx.fillText(`${formatMilesEnteros(n.amperes)} A · ${n.region}`, HALF_BOX, pillY + 16.5);
+        ctx.font = '600 7.8px "IBM Plex Mono", monospace';
+        ctx.fillText(`${formatMilesEnteros(n.amperes)} A · ${n.region}`, HALF_BOX, pillY + 25.5);
 
         // 4. Borneras
         ctx.fillStyle = '#222426';
@@ -2422,24 +2449,29 @@ const FlowSceneInner: React.FC<{
         ctx.stroke(iconPath);
         ctx.translate(-ix, -iy);
 
-        // 3. Pastilla técnica inferior (Tensión · MW y Amperes · Región)
+        // 3. Pastilla técnica inferior (Rol/Tipo, Tensión · MW y Amperes · Región)
         const pillX = n.x + 6;
-        const pillY = n.y + 86;
+        const pillY = n.y + 82;
         const pillW = BOX_SIZE - 12;
-        const pillH = 31;
+        const pillH = 37;
         ctx.fillStyle = isDimmed ? '#E2DDD0' : '#EAE4D7';
         ctx.fillRect(pillX, pillY, pillW, pillH);
         ctx.strokeStyle = isDimmed ? '#C4BEB0' : '#D1CBBF';
         ctx.lineWidth = 1;
         ctx.strokeRect(pillX, pillY, pillW, pillH);
 
+        // Rol del nodo (Generación, EETT, Distribuidora, Cooperativa)
+        ctx.fillStyle = isDimmed ? '#8A857A' : vCfg.color;
+        ctx.font = '700 7.2px "IBM Plex Mono", monospace';
+        ctx.fillText(n.roleBadge || n.typeName, n.x + HALF_BOX, pillY + 3.5);
+
         ctx.fillStyle = isDimmed ? '#666258' : '#222426';
-        ctx.font = '700 8.2px "IBM Plex Mono", monospace';
-        ctx.fillText(`${n.kvText} · ${n.powerMw}`, n.x + HALF_BOX, pillY + 4);
+        ctx.font = '700 8.0px "IBM Plex Mono", monospace';
+        ctx.fillText(`${n.kvText} · ${n.powerMw}`, n.x + HALF_BOX, pillY + 14.5);
 
         ctx.fillStyle = isDimmed ? '#8A857A' : '#55524B';
-        ctx.font = '600 8px "IBM Plex Mono", monospace';
-        ctx.fillText(`${formatMilesEnteros(n.amperes)} A · ${n.region}`, n.x + HALF_BOX, pillY + 16.5);
+        ctx.font = '600 7.8px "IBM Plex Mono", monospace';
+        ctx.fillText(`${formatMilesEnteros(n.amperes)} A · ${n.region}`, n.x + HALF_BOX, pillY + 25.5);
 
         // 4. Borneras de entrada / salida (8x8px)
         const hasInput = n.role !== 'GEN';
