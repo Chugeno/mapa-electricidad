@@ -1,38 +1,38 @@
 {
-  "timestamp": "2026-10-26T19:58:45.601Z",
+  "timestamp": "2026-10-26T20:02:20.680Z",
   "status": "ONLINE 5M",
-  "sadi_total_mw": 15919,
-  "frequency_hz": 50.00337295332872,
+  "sadi_total_mw": 15946,
+  "frequency_hz": 49.98220396878836,
   "regions": {
     "SADI": {
-      "demanda_mw": 15919,
-      "temperatura": 0,
-      "timestamp": "2026-10-26T16:55:00.000-0300",
-      "demAyer": 13905
+      "demanda_mw": 15946,
+      "temperatura": 16.7,
+      "timestamp": "2026-10-26T17:00:00.000-0300",
+      "demAyer": 14061
     },
     "GBA": {
-      "demanda_mw": 5704,
-      "temperatura": 0,
-      "timestamp": "2026-10-26T16:50:00.000-0300",
-      "demAyer": 4903
+      "demanda_mw": 5649,
+      "temperatura": 15.9,
+      "timestamp": "2026-10-26T17:00:00.000-0300",
+      "demAyer": 4911
     },
     "Litoral": {
-      "demanda_mw": 1790,
-      "temperatura": 0,
-      "timestamp": "2026-10-26T16:50:00.000-0300",
-      "demAyer": 1374
+      "demanda_mw": 1762,
+      "temperatura": 17.4,
+      "timestamp": "2026-10-26T17:00:00.000-0300",
+      "demAyer": 1442
     },
     "Centro": {
       "demanda_mw": 1350,
-      "temperatura": 0,
-      "timestamp": "2026-10-26T16:50:00.000-0300",
-      "demAyer": 1406
+      "temperatura": 20.5,
+      "timestamp": "2026-10-26T17:00:00.000-0300",
+      "demAyer": 1402
     },
     "Cuyo": {
       "demanda_mw": 772,
-      "temperatura": 0,
-      "timestamp": "2026-10-26T16:50:00.000-0300",
-      "demAyer": 696
+      "temperatura": 21.6,
+      "timestamp": "2026-10-26T17:00:00.000-0300",
+      "demAyer": 701
     },
     "NOA": {
       "demanda_mw": 1254,
@@ -47,10 +47,10 @@
       "demAyer": 859
     },
     "Comahue": {
-      "demanda_mw": 664,
-      "temperatura": 0,
-      "timestamp": "2026-10-26T16:50:00.000-0300",
-      "demAyer": 533
+      "demanda_mw": 658,
+      "temperatura": 21.4,
+      "timestamp": "2026-10-26T17:00:00.000-0300",
+      "demAyer": 544
     },
     "Patagonia": {
       "demanda_mw": 1036,
@@ -61,8 +61,8 @@
     "BAS": {
       "demanda_mw": 2231,
       "temperatura": 0,
-      "timestamp": "2026-10-26T16:50:00.000-0300",
-      "demAyer": 1979
+      "timestamp": "2026-10-26T16:55:00.000-0300",
+      "demAyer": 1972
     }
   },
   "renovables": {
@@ -81,7 +81,7 @@
       "to": "GBA",
       "nominal_kv": 500,
       "flow_direction": 1,
-      "load_factor": 1.1236941176470587,
+      "load_factor": 1.1256,
       "speed": 1.4
     },
     "PATAGONIA_COMAHUE": {
@@ -97,7 +97,7 @@
       "to": "GBA",
       "nominal_kv": 500,
       "flow_direction": 1,
-      "load_factor": 1.1436111111111111,
+      "load_factor": 1.125722222222222,
       "speed": 1.3
     },
     "NEA_LITORAL": {

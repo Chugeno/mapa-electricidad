@@ -3540,7 +3540,14 @@ const FlowSceneInner: React.FC<{
 // 8. COMPONENTE PRINCIPAL SADI (830 PARTICIPANTES + TELEMETRÍA EN VIVO)
 // ============================================================================
 export const PrototypeDagre: React.FC = () => {
-  const [layoutMode, setLayoutMode] = useState<'DAGRE_LR' | 'DAGRE_TB' | 'BUSES' | 'MAP'>('DAGRE_TB');
+  // Detección inicial: celulares/tablets en vertical (< 768px o touch con pantalla alta)
+  const isMobileInitial = typeof window !== 'undefined'
+    ? (window.innerWidth < 768 || (window.innerWidth < 1024 && window.innerHeight > window.innerWidth))
+    : false;
+
+  const [layoutMode, setLayoutMode] = useState<'DAGRE_LR' | 'DAGRE_TB' | 'BUSES' | 'MAP'>(
+    isMobileInitial ? 'DAGRE_TB' : 'DAGRE_LR'
+  );
   const [topology, setTopology] = useState<TopologyData | null>(null);
   const [telemetry, setTelemetry] = useState<TelemetryData | null>(null);
   const [filterKv, setFilterKv] = useState<number[]>([]);
@@ -3550,7 +3557,7 @@ export const PrototypeDagre: React.FC = () => {
   const [openDropdown, setOpenDropdown] = useState<'kv' | 'role' | 'tech' | null>(null);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [showFullWfs, setShowFullWfs] = useState<boolean>(false);
-  const [animateFlow, setAnimateFlow] = useState<boolean>(false);
+  const [animateFlow, setAnimateFlow] = useState<boolean>(!isMobileInitial);
   const [counts, setCounts] = useState<{ nodes: number; edges: number }>({ nodes: 830, edges: 1122 });
   const [selectedNode, setSelectedNode] = useState<GridNodeData | null>(null);
   const [selectedEdge, setSelectedEdge] = useState<GridEdgeData | null>(null);
